@@ -14,7 +14,7 @@ use chirper_core::{
     ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_ollama::{list_ollama_models, OllamaFormatter, OllamaModel, OllamaOptions};
-use chirper_formatter_rules::RuleFormatter;
+use chirper_formatter_rules::format_spoken_rules_with_vocabulary;
 use chirper_insertion_clipboard::ClipboardInserter;
 use chirper_platform::{PlatformDiagnostics, RuntimeDiagnostics};
 
@@ -99,6 +99,21 @@ fn main() {
 
     if matches!(first.as_deref(), Some("ollama-use")) {
         ollama_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("vocab-list")) {
+        vocab_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("vocab-add")) {
+        vocab_add(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("vocab-remove")) {
+        vocab_remove(args.collect());
         return;
     }
 
@@ -675,6 +690,7 @@ fn formatter_current(args: Vec<String>) {
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
+    println!("vocabulary_entries: {}", config.vocabulary.len());
 }
 
 fn formatter_use(args: Vec<String>) {
@@ -839,6 +855,75 @@ fn ollama_status_json(
         },
         "models": models_json,
     })
+}
+
+fn vocab_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+
+    if json {
+        let entries = config
+            .vocabulary
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "spoken": entry.spoken,
+                    "written": entry.written,
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({ "entries": entries });
+
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    if config.vocabulary.is_empty() {
+        println!("no vocabulary entries configured");
+        println!("example: chirper vocab-add \"silas on linux\" SilasOnLinux");
+        return;
+    }
+
+    println!("vocabulary:");
+    for entry in config.vocabulary {
+        println!("  {:<28} -> {}", entry.spoken, entry.written);
+    }
+}
+
+fn vocab_add(args: Vec<String>) {
+    if args.len() != 2 {
+        eprintln!("usage: chirper vocab-add <spoken phrase> <written form>");
+        eprintln!("example: chirper vocab-add \"silas on linux\" SilasOnLinux");
+        std::process::exit(1);
+    }
+
+    if let Err(error) = ChirperConfig::save_default_vocabulary_entry(&args[0], &args[1]) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("added vocabulary entry: {} -> {}", args[0], args[1]);
+}
+
+fn vocab_remove(args: Vec<String>) {
+    if args.len() != 1 {
+        eprintln!("usage: chirper vocab-remove <spoken phrase>");
+        std::process::exit(1);
+    }
+
+    let removed = match ChirperConfig::remove_default_vocabulary_entry(&args[0]) {
+        Ok(removed) => removed,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    if removed {
+        println!("removed vocabulary entry: {}", args[0]);
+    } else {
+        println!("vocabulary entry not found: {}", args[0]);
+    }
 }
 
 fn daemon_start_screen() {
@@ -1337,9 +1422,9 @@ fn format_transcript_with_config(
 ) -> Result<String, String> {
     match config.formatter_backend {
         FormatterBackend::None => Ok(transcript.text.clone()),
-        FormatterBackend::Rules => format_with_rules(transcript, mode),
+        FormatterBackend::Rules => format_with_rules(config, transcript, mode),
         FormatterBackend::Ollama => {
-            let preformatted = format_with_rules(transcript, mode)?;
+            let preformatted = format_with_rules(config, transcript, mode)?;
             let transcript = chirper_core::Transcript {
                 text: preformatted,
                 language: transcript.language.clone(),
@@ -1356,12 +1441,15 @@ fn format_transcript_with_config(
 }
 
 fn format_with_rules(
+    config: &ChirperConfig,
     transcript: &chirper_core::Transcript,
     mode: DictationMode,
 ) -> Result<String, String> {
-    RuleFormatter
-        .format(transcript, mode)
-        .map_err(|error| error.to_string())
+    Ok(format_spoken_rules_with_vocabulary(
+        &transcript.text,
+        mode,
+        &config.vocabulary,
+    ))
 }
 
 fn transcribe_audio(audio: chirper_core::CapturedAudio) -> chirper_core::Transcript {

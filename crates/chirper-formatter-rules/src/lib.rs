@@ -1,4 +1,4 @@
-use chirper_core::{ChirperResult, DictationMode, Formatter, Transcript};
+use chirper_core::{ChirperResult, DictationMode, Formatter, Transcript, VocabularyEntry};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RuleFormatter;
@@ -10,12 +10,44 @@ impl Formatter for RuleFormatter {
 }
 
 pub fn format_spoken_rules(text: &str, mode: DictationMode) -> String {
+    format_spoken_rules_with_vocabulary(text, mode, &[])
+}
+
+pub fn format_spoken_rules_with_vocabulary(
+    text: &str,
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> String {
     let tokens = text.split_whitespace().map(Token::new).collect::<Vec<_>>();
     let mut pieces = Vec::new();
     let mut index = 0;
 
     while index < tokens.len() {
-        if let Some((piece, consumed)) = match_command(&tokens[index..], mode) {
+        if let Some(consumed) = match_scratch_command(&tokens[index..]) {
+            pieces.clear();
+            index += consumed;
+        } else if let Some((correction, consumed, terminator)) =
+            match_spelling_command(&tokens[index..])
+        {
+            replace_previous_identifier_phrase(&mut pieces, correction);
+            if let Some(terminator) = terminator {
+                pieces.push(RenderPiece::Punct(terminator));
+            }
+            index += consumed;
+        } else if let Some(consumed) = match_pascal_case_command(&tokens[index..]) {
+            let terminator = terminal_punctuation(&tokens[index + consumed - 1].raw);
+            apply_pascal_case(&mut pieces);
+            if let Some(terminator) = terminator {
+                pieces.push(RenderPiece::Punct(terminator));
+            }
+            index += consumed;
+        } else if let Some((piece, consumed)) = match_vocabulary(&tokens[index..], vocabulary) {
+            pieces.push(piece);
+            if let Some(punctuation) = trailing_punctuation(&tokens[index + consumed - 1].raw) {
+                pieces.push(RenderPiece::Punct(punctuation));
+            }
+            index += consumed;
+        } else if let Some((piece, consumed)) = match_command(&tokens[index..], mode) {
             pieces.push(piece);
             index += consumed;
         } else {
@@ -25,6 +57,33 @@ pub fn format_spoken_rules(text: &str, mode: DictationMode) -> String {
     }
 
     render(&pieces, mode)
+}
+
+pub fn learn_spelling_vocabulary(text: &str) -> Vec<VocabularyEntry> {
+    let tokens = text.split_whitespace().map(Token::new).collect::<Vec<_>>();
+    let mut pieces = Vec::new();
+    let mut entries = Vec::new();
+    let mut index = 0;
+
+    while index < tokens.len() {
+        if let Some(consumed) = match_scratch_command(&tokens[index..]) {
+            pieces.clear();
+            index += consumed;
+        } else if let Some((correction, consumed, _terminator)) =
+            match_spelling_command(&tokens[index..])
+        {
+            let written = correction.written.clone();
+            if let Some(spoken) = replace_previous_identifier_phrase(&mut pieces, correction) {
+                entries.push(VocabularyEntry { spoken, written });
+            }
+            index += consumed;
+        } else {
+            pieces.push(RenderPiece::Word(tokens[index].raw.clone()));
+            index += 1;
+        }
+    }
+
+    dedupe_entries(entries)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +114,458 @@ enum RenderPiece {
     NoSpace,
     Tab,
     Raw(&'static str),
+}
+
+fn match_scratch_command(tokens: &[Token]) -> Option<usize> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+
+    match (first, second) {
+        ("scratch" | "delete", Some("that" | "this" | "it")) => Some(2),
+        _ => None,
+    }
+}
+
+fn match_pascal_case_command(tokens: &[Token]) -> Option<usize> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+    let third = tokens.get(2).map(|token| token.normalized.as_str());
+
+    match (first, second, third) {
+        ("in", Some("pascal"), Some("case")) => Some(3),
+        ("in", Some("pascalcase"), _) => Some(2),
+        ("pascal", Some("case"), _) => Some(2),
+        ("pascalcase", _, _) => Some(1),
+        _ => None,
+    }
+}
+
+fn match_spelling_command(
+    tokens: &[Token],
+) -> Option<(SpellingCorrection, usize, Option<&'static str>)> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+    let third = tokens.get(2).map(|token| token.normalized.as_str());
+
+    let value_start = match (first, second, third) {
+        ("spelled" | "spelt", Some("as"), _) => 2,
+        ("spelled" | "spelt", _, _) => 1,
+        ("is", Some("spelled" | "spelt"), Some("as")) => 3,
+        ("is", Some("spelled" | "spelt"), _) => 2,
+        ("should", Some("be"), Some("spelled" | "spelt")) => 3,
+        ("written", Some("as"), _) => 2,
+        ("written", _, _) => 1,
+        _ => return None,
+    };
+
+    let (correction, consumed, terminator) = parse_spelling_value(&tokens[value_start..])?;
+
+    Some((correction, value_start + consumed, terminator))
+}
+
+fn parse_spelling_value(
+    tokens: &[Token],
+) -> Option<(SpellingCorrection, usize, Option<&'static str>)> {
+    let mut values = Vec::new();
+    let mut index = 0;
+    let mut any_explicit_case = false;
+    let mut all_caps = false;
+    let mut terminator = None;
+
+    if tokens.get(0).map(|token| token.normalized.as_str()) == Some("all")
+        && tokens.get(1).map(|token| token.normalized.as_str()) == Some("caps")
+    {
+        all_caps = true;
+        index = 2;
+    }
+
+    while index < tokens.len() {
+        let token = &tokens[index];
+
+        if matches!(token.normalized.as_str(), "capital" | "uppercase" | "upper") {
+            let next = tokens.get(index + 1)?;
+            let Some(character) = letter_token(next) else {
+                break;
+            };
+            values.push(SpelledValue {
+                character,
+                uppercase: true,
+            });
+            any_explicit_case = true;
+            terminator = trailing_punctuation(&next.raw);
+            index += 2;
+
+            if terminator.is_some() {
+                break;
+            }
+
+            continue;
+        }
+
+        if matches!(token.normalized.as_str(), "lowercase" | "lower") {
+            let next = tokens.get(index + 1)?;
+            let Some(character) = letter_token(next) else {
+                break;
+            };
+            values.push(SpelledValue {
+                character,
+                uppercase: false,
+            });
+            any_explicit_case = true;
+            terminator = trailing_punctuation(&next.raw);
+            index += 2;
+
+            if terminator.is_some() {
+                break;
+            }
+
+            continue;
+        }
+
+        let Some(character) = letter_token(token) else {
+            break;
+        };
+        values.push(SpelledValue {
+            character,
+            uppercase: false,
+        });
+        terminator = trailing_punctuation(&token.raw);
+        index += 1;
+
+        if terminator.is_some() {
+            break;
+        }
+    }
+
+    if values.is_empty() {
+        return None;
+    }
+
+    Some((
+        SpellingCorrection {
+            written: render_spelled_value(&values, all_caps, any_explicit_case),
+            allow_phrase_case: !all_caps && !any_explicit_case,
+        },
+        index,
+        terminator,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpellingCorrection {
+    written: String,
+    allow_phrase_case: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpelledValue {
+    character: char,
+    uppercase: bool,
+}
+
+fn letter_token(token: &Token) -> Option<char> {
+    let mut chars = token.normalized.chars();
+    let character = chars.next()?;
+
+    if chars.next().is_none() && character.is_ascii_alphanumeric() {
+        Some(character)
+    } else {
+        None
+    }
+}
+
+fn render_spelled_value(
+    values: &[SpelledValue],
+    all_caps: bool,
+    any_explicit_case: bool,
+) -> String {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if !value.character.is_ascii_alphabetic() {
+                return value.character.to_string();
+            }
+
+            if all_caps || value.uppercase || (!any_explicit_case && index == 0) {
+                value.character.to_ascii_uppercase().to_string()
+            } else {
+                value.character.to_ascii_lowercase().to_string()
+            }
+        })
+        .collect()
+}
+
+fn match_vocabulary(
+    tokens: &[Token],
+    vocabulary: &[VocabularyEntry],
+) -> Option<(RenderPiece, usize)> {
+    for entry in vocabulary {
+        let spoken = entry
+            .spoken
+            .split_whitespace()
+            .map(normalize)
+            .filter(|token| !token.is_empty())
+            .collect::<Vec<_>>();
+
+        if spoken.is_empty() || spoken.len() > tokens.len() {
+            continue;
+        }
+
+        if spoken
+            .iter()
+            .zip(tokens)
+            .all(|(spoken, token)| spoken == &token.normalized)
+        {
+            if match_spelling_command(&tokens[spoken.len()..]).is_some() {
+                return None;
+            }
+
+            return Some((RenderPiece::Word(entry.written.clone()), spoken.len()));
+        }
+    }
+
+    None
+}
+
+fn apply_pascal_case(pieces: &mut Vec<RenderPiece>) {
+    trim_trailing_weak_punctuation(pieces);
+
+    let Some((start, end)) = identifier_phrase_range(pieces) else {
+        return;
+    };
+    let words = pieces[start..end]
+        .iter()
+        .filter_map(|piece| match piece {
+            RenderPiece::Word(word) => identifier_word(word),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if words.is_empty() {
+        return;
+    }
+
+    pieces.splice(
+        start..end,
+        [RenderPiece::Word(words_to_pascal_case(&words))],
+    );
+}
+
+fn replace_previous_identifier_phrase(
+    pieces: &mut Vec<RenderPiece>,
+    correction: SpellingCorrection,
+) -> Option<String> {
+    trim_trailing_weak_punctuation(pieces);
+
+    let (start, end) = identifier_phrase_range(pieces)?;
+    let spoken = spoken_phrase_from_pieces(&pieces[start..end])?;
+    let words = identifier_words_from_pieces(&pieces[start..end]);
+    let written = if correction.allow_phrase_case {
+        phrase_case_spelling(&correction.written, &words).unwrap_or(correction.written)
+    } else {
+        correction.written
+    };
+    pieces.splice(start..end, [RenderPiece::Word(written)]);
+
+    Some(spoken)
+}
+
+fn spoken_phrase_from_pieces(pieces: &[RenderPiece]) -> Option<String> {
+    let words = identifier_words_from_pieces(pieces)
+        .into_iter()
+        .map(|word| normalize(&word))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+
+    if words.is_empty() {
+        None
+    } else {
+        Some(words.join(" "))
+    }
+}
+
+fn identifier_words_from_pieces(pieces: &[RenderPiece]) -> Vec<String> {
+    pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            RenderPiece::Word(word) => identifier_word(word),
+            _ => None,
+        })
+        .collect()
+}
+
+fn phrase_case_spelling(written: &str, phrase_words: &[String]) -> Option<String> {
+    if phrase_words.len() < 2
+        || !written
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+
+    let normalized_words = phrase_words
+        .iter()
+        .map(|word| normalize(word))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let expected_len = normalized_words
+        .iter()
+        .map(|word| word.chars().count())
+        .sum::<usize>();
+
+    if expected_len != written.chars().count() {
+        return None;
+    }
+
+    let mut remaining = written.chars();
+    let mut output = String::new();
+
+    for word in normalized_words {
+        let segment = remaining
+            .by_ref()
+            .take(word.chars().count())
+            .collect::<String>();
+        output.push_str(&capitalize_pascal_segment(&segment));
+    }
+
+    Some(output)
+}
+
+fn trim_trailing_weak_punctuation(pieces: &mut Vec<RenderPiece>) {
+    while matches!(pieces.last(), Some(RenderPiece::Punct("," | ":" | ";"))) {
+        pieces.pop();
+    }
+}
+
+fn identifier_phrase_range(pieces: &[RenderPiece]) -> Option<(usize, usize)> {
+    let end = pieces.len();
+    let mut start = end;
+    let mut saw_word = false;
+
+    for index in (0..end).rev() {
+        match &pieces[index] {
+            RenderPiece::Word(word) => {
+                let normalized = normalize(word);
+                if normalized.is_empty() {
+                    break;
+                }
+
+                if saw_word && phrase_boundary_word(&normalized) {
+                    break;
+                }
+
+                start = index;
+                saw_word = true;
+
+                if strong_sentence_end(word) {
+                    break;
+                }
+            }
+            RenderPiece::Punct("." | "?" | "!") | RenderPiece::Newline(_) => {
+                break;
+            }
+            RenderPiece::Punct("," | ":" | ";") if !saw_word => {
+                start = index;
+            }
+            _ => {
+                if saw_word {
+                    break;
+                }
+            }
+        }
+    }
+
+    saw_word.then_some((start, end))
+}
+
+fn phrase_boundary_word(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "called" | "named" | "titled" | "is" | "are" | "was" | "were" | "as" | "the" | "a" | "an"
+    )
+}
+
+fn identifier_word(word: &str) -> Option<String> {
+    let trimmed = word.trim_matches(|character: char| !character.is_alphanumeric());
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn words_to_pascal_case(words: &[String]) -> String {
+    words
+        .iter()
+        .flat_map(|word| {
+            word.split(|character: char| !character.is_alphanumeric())
+                .filter(|segment| !segment.is_empty())
+                .map(capitalize_pascal_segment)
+        })
+        .collect()
+}
+
+fn capitalize_pascal_segment(segment: &str) -> String {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+
+    let mut output = String::new();
+    output.extend(first.to_uppercase());
+    let rest = chars.as_str();
+
+    if segment.chars().any(char::is_uppercase) {
+        output.push_str(rest);
+    } else {
+        output.push_str(&rest.to_ascii_lowercase());
+    }
+
+    output
+}
+
+fn terminal_punctuation(word: &str) -> Option<&'static str> {
+    match word.chars().last()? {
+        '.' => Some("."),
+        '?' => Some("?"),
+        '!' => Some("!"),
+        _ => None,
+    }
+}
+
+fn trailing_punctuation(word: &str) -> Option<&'static str> {
+    match word.chars().last()? {
+        ',' => Some(","),
+        '.' => Some("."),
+        '?' => Some("?"),
+        '!' => Some("!"),
+        ':' => Some(":"),
+        ';' => Some(";"),
+        _ => None,
+    }
+}
+
+fn strong_sentence_end(word: &str) -> bool {
+    matches!(word.chars().last(), Some('.' | '?' | '!'))
+}
+
+fn dedupe_entries(entries: Vec<VocabularyEntry>) -> Vec<VocabularyEntry> {
+    let mut deduped = Vec::new();
+
+    for entry in entries {
+        if deduped
+            .iter()
+            .any(|existing: &VocabularyEntry| existing.spoken == entry.spoken)
+        {
+            continue;
+        }
+
+        deduped.push(entry);
+    }
+
+    deduped
 }
 
 fn match_command(tokens: &[Token], mode: DictationMode) -> Option<(RenderPiece, usize)> {
@@ -343,6 +854,114 @@ mod tests {
         assert_eq!(
             format_spoken_rules("literal comma comma literal period", DictationMode::Auto),
             "comma, period"
+        );
+    }
+
+    #[test]
+    fn scratch_that_clears_recording_so_far() {
+        assert_eq!(
+            format_spoken_rules(
+                "Hello there. My name is Silas, I run a YouTube, sorry, scratch that. Hello, my name is Silas",
+                DictationMode::Auto
+            ),
+            "Hello, my name is Silas"
+        );
+        assert_eq!(
+            format_spoken_rules("wrong start delete that correct start", DictationMode::Auto),
+            "correct start"
+        );
+    }
+
+    #[test]
+    fn pascal_case_command_transforms_previous_phrase() {
+        assert_eq!(
+            format_spoken_rules(
+                "channel called Silas on Linux Pascal Case",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "channel called Silas on Linux, Pascal Case. You can find it",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux. You can find it"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "my name is silas on linux in pascal case",
+                DictationMode::Auto
+            ),
+            "my name is SilasOnLinux"
+        );
+    }
+
+    #[test]
+    fn spelling_command_rewrites_and_can_be_learned() {
+        assert_eq!(
+            format_spoken_rules(
+                "the app is called prepped spelled p r e p d.",
+                DictationMode::Auto
+            ),
+            "the app is called Prepd."
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "channel called silas on linux spelled capital s i l a s capital o n capital l i n u x",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "channel called silas on linux spelled s i l a s o n l i n u x",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux"
+        );
+
+        let entries = learn_spelling_vocabulary(
+            "the app is called prepped spelled p r e p d. then keep talking",
+        );
+
+        assert_eq!(
+            entries,
+            vec![VocabularyEntry {
+                spoken: "prepped".to_string(),
+                written: "Prepd".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn configured_vocabulary_rewrites_spoken_phrases() {
+        let vocabulary = vec![
+            VocabularyEntry {
+                spoken: "silas on linux".to_string(),
+                written: "SilasOnLinux".to_string(),
+            },
+            VocabularyEntry {
+                spoken: "prepped".to_string(),
+                written: "Prepd".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            format_spoken_rules_with_vocabulary(
+                "Silas on Linux uses prepped.",
+                DictationMode::Auto,
+                &vocabulary,
+            ),
+            "SilasOnLinux uses Prepd."
+        );
+        assert_eq!(
+            format_spoken_rules_with_vocabulary(
+                "Silas on Linux spelled s i l a s o n l i n u x",
+                DictationMode::Auto,
+                &vocabulary,
+            ),
+            "SilasOnLinux"
         );
     }
 

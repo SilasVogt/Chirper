@@ -54,6 +54,7 @@ pub struct ChirperConfig {
     pub whisper_language: Option<String>,
     pub ollama_command: String,
     pub ollama_model: String,
+    pub vocabulary: Vec<VocabularyEntry>,
 }
 
 impl Default for ChirperConfig {
@@ -72,6 +73,7 @@ impl Default for ChirperConfig {
             whisper_language: None,
             ollama_command: "ollama".to_string(),
             ollama_model: "llama3.2".to_string(),
+            vocabulary: Vec::new(),
         }
     }
 }
@@ -156,6 +158,10 @@ impl ChirperConfig {
 
         if let Some(value) = table.get("ollama_model") {
             config.ollama_model = parse_string("ollama_model", value)?.to_string();
+        }
+
+        if let Some(value) = table.get("vocabulary") {
+            config.vocabulary = parse_vocabulary(value)?;
         }
 
         Ok(config)
@@ -355,6 +361,56 @@ impl ChirperConfig {
         })
     }
 
+    pub fn save_vocabulary_entry(
+        path: impl AsRef<Path>,
+        spoken: &str,
+        written: &str,
+    ) -> ChirperResult<()> {
+        let spoken = spoken.trim();
+        let written = written.trim();
+
+        if spoken.is_empty() || written.is_empty() {
+            return Err(ChirperError::Configuration(
+                "vocabulary entries require spoken and written text".to_string(),
+            ));
+        }
+
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        let mut vocabulary = remove_vocabulary_table(&mut table)?;
+        vocabulary.insert(
+            spoken.to_ascii_lowercase(),
+            toml::Value::String(written.to_string()),
+        );
+        table.insert("vocabulary".to_string(), toml::Value::Table(vocabulary));
+
+        write_config_table(path, &table)
+    }
+
+    pub fn remove_vocabulary_entry(path: impl AsRef<Path>, spoken: &str) -> ChirperResult<bool> {
+        let spoken = spoken.trim();
+
+        if spoken.is_empty() {
+            return Err(ChirperError::Configuration(
+                "vocabulary entries require spoken text".to_string(),
+            ));
+        }
+
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        let mut vocabulary = remove_vocabulary_table(&mut table)?;
+        let removed = vocabulary.remove(&spoken.to_ascii_lowercase()).is_some();
+
+        if vocabulary.is_empty() {
+            table.remove("vocabulary");
+        } else {
+            table.insert("vocabulary".to_string(), toml::Value::Table(vocabulary));
+        }
+
+        write_config_table(path, &table)?;
+        Ok(removed)
+    }
+
     pub fn save_default_model_selection(
         model: &str,
         model_path: impl AsRef<Path>,
@@ -372,6 +428,20 @@ impl ChirperConfig {
     ) -> ChirperResult<()> {
         Self::save_formatter_selection(Self::default_path(), backend, ollama_model)
     }
+
+    pub fn save_default_vocabulary_entry(spoken: &str, written: &str) -> ChirperResult<()> {
+        Self::save_vocabulary_entry(Self::default_path(), spoken, written)
+    }
+
+    pub fn remove_default_vocabulary_entry(spoken: &str) -> ChirperResult<bool> {
+        Self::remove_vocabulary_entry(Self::default_path(), spoken)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VocabularyEntry {
+    pub spoken: String,
+    pub written: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,6 +599,80 @@ fn parse_optional_path(key: &str, value: &toml::Value) -> ChirperResult<Option<P
     Ok(parse_optional_string(key, value)?.map(PathBuf::from))
 }
 
+fn parse_vocabulary(value: &toml::Value) -> ChirperResult<Vec<VocabularyEntry>> {
+    let table = value.as_table().ok_or_else(|| {
+        ChirperError::Configuration("config key `vocabulary` must be a table".to_string())
+    })?;
+    let mut entries = table
+        .iter()
+        .map(|(spoken, written)| {
+            Ok(VocabularyEntry {
+                spoken: spoken.to_string(),
+                written: parse_string("vocabulary", written)?.to_string(),
+            })
+        })
+        .collect::<ChirperResult<Vec<_>>>()?;
+
+    entries.sort_by(|left, right| {
+        right
+            .spoken
+            .split_whitespace()
+            .count()
+            .cmp(&left.spoken.split_whitespace().count())
+            .then_with(|| left.spoken.cmp(&right.spoken))
+    });
+
+    Ok(entries)
+}
+
+fn read_config_table(path: &Path) -> ChirperResult<toml::Table> {
+    if path.exists() {
+        let content = fs::read_to_string(path).map_err(|source| {
+            ChirperError::Configuration(format!(
+                "failed to read config file {}: {source}",
+                path.display()
+            ))
+        })?;
+
+        content.parse::<toml::Table>().map_err(|source| {
+            ChirperError::Configuration(format!("failed to parse config TOML: {source}"))
+        })
+    } else {
+        Ok(toml::Table::new())
+    }
+}
+
+fn write_config_table(path: &Path, table: &toml::Table) -> ChirperResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| {
+            ChirperError::Configuration(format!(
+                "failed to create config directory {}: {source}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let content = toml::to_string_pretty(table).map_err(|source| {
+        ChirperError::Configuration(format!("failed to encode config TOML: {source}"))
+    })?;
+    fs::write(path, content).map_err(|source| {
+        ChirperError::Configuration(format!(
+            "failed to write config file {}: {source}",
+            path.display()
+        ))
+    })
+}
+
+fn remove_vocabulary_table(table: &mut toml::Table) -> ChirperResult<toml::Table> {
+    match table.remove("vocabulary") {
+        Some(toml::Value::Table(vocabulary)) => Ok(vocabulary),
+        Some(_) => Err(ChirperError::Configuration(
+            "config key `vocabulary` must be a table".to_string(),
+        )),
+        None => Ok(toml::Table::new()),
+    }
+}
+
 fn normalize(value: &str) -> String {
     value
         .trim()
@@ -595,6 +739,32 @@ mod tests {
         assert_eq!(config.whisper_language, Some("en".to_string()));
         assert_eq!(config.ollama_command, "/usr/bin/ollama");
         assert_eq!(config.ollama_model, "llama3.1:8b");
+    }
+
+    #[test]
+    fn parses_vocabulary_entries_longest_first() {
+        let config = ChirperConfig::from_toml_str(
+            r#"
+            [vocabulary]
+            "prepped" = "Prepd"
+            "silas on linux" = "SilasOnLinux"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.vocabulary,
+            vec![
+                VocabularyEntry {
+                    spoken: "silas on linux".to_string(),
+                    written: "SilasOnLinux".to_string(),
+                },
+                VocabularyEntry {
+                    spoken: "prepped".to_string(),
+                    written: "Prepd".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -710,6 +880,40 @@ mod tests {
 
         assert_eq!(config.formatter_backend, FormatterBackend::Rules);
         assert_eq!(config.ollama_model, "llama3.2:latest");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_and_remove_vocabulary_entries() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "vocabulary"
+        ));
+        fs::write(&path, r#"formatter_backend = "rules""#).unwrap();
+
+        ChirperConfig::save_vocabulary_entry(&path, "Silas on Linux", "SilasOnLinux").unwrap();
+        ChirperConfig::save_vocabulary_entry(&path, "prepped", "Prepd").unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.formatter_backend, FormatterBackend::Rules);
+        assert_eq!(config.vocabulary.len(), 2);
+        assert!(config
+            .vocabulary
+            .iter()
+            .any(|entry| entry.spoken == "silas on linux" && entry.written == "SilasOnLinux"));
+        assert!(config
+            .vocabulary
+            .iter()
+            .any(|entry| entry.spoken == "prepped" && entry.written == "Prepd"));
+
+        assert!(ChirperConfig::remove_vocabulary_entry(&path, "prepped").unwrap());
+        assert!(!ChirperConfig::remove_vocabulary_entry(&path, "missing").unwrap());
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.vocabulary.len(), 1);
+        assert_eq!(config.vocabulary[0].written, "SilasOnLinux");
 
         let _ = fs::remove_file(path);
     }

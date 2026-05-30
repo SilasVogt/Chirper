@@ -72,6 +72,20 @@ cargo run -p chirper-cli -- formatter-use ollama llama3.2
 Use `--no-enable` to update `ollama_model` while keeping the current formatter
 backend.
 
+To manage preferred spellings used by the rules preprocessor and the Ollama
+prompt:
+
+```sh
+cargo run -p chirper-cli -- vocab-list
+cargo run -p chirper-cli -- vocab-add "silas on linux" SilasOnLinux
+cargo run -p chirper-cli -- vocab-add prepped Prepd
+cargo run -p chirper-cli -- vocab-remove prepped
+```
+
+The daemon can also learn a spelling during dictation when the transcript
+contains an explicit correction such as `prepped spelled p r e p d` or
+`silas on linux spelled s i l a s o n l i n u x`.
+
 To smoke-test the first end-to-end local loop:
 
 ```sh

@@ -59,7 +59,9 @@ Backends should be swappable behind narrow interfaces:
 
 - `AudioSource`: start and stop capture, returning audio data or a recording path.
 - `AsrEngine`: turn captured audio into a transcript.
-- `Formatter`: optionally clean, rewrite, or style the transcript.
+- `Formatter`: optionally clean, rewrite, or style the transcript. The local
+  rules preprocessor stays first in the pipeline; LLM formatters receive the
+  rule-processed transcript plus preferred spelling context.
 - `InsertionBackend`: insert final text into the focused application.
 - `HotkeyBackend`: optional frontend-side trigger source.
 
@@ -72,7 +74,7 @@ The first implementation can be direct and in-process. A later external plugin A
 | Audio | PipeWire | file input for tests |
 | ASR | whisper.cpp | faster-whisper, remote API adapters |
 | GPU | ROCm/Vulkan/CPU selection | CUDA, OpenVINO |
-| Formatting | none, rules, Ollama | llama.cpp |
+| Formatting | none, rules, vocabulary, Ollama | llama.cpp |
 | Insertion | clipboard, uinput | IBus, X11, wlroots-specific |
 | GNOME UI | CLI first, extension second | GTK settings app |
 

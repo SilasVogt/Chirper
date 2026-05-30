@@ -15,7 +15,7 @@ use chirper_core::{
     WorkflowState,
 };
 use chirper_formatter_ollama::{OllamaFormatter, OllamaOptions};
-use chirper_formatter_rules::RuleFormatter;
+use chirper_formatter_rules::{format_spoken_rules_with_vocabulary, learn_spelling_vocabulary};
 use chirper_insertion_clipboard::ClipboardInserter;
 
 fn main() {
@@ -237,7 +237,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
     };
     let recording_path = Some(audio.path.display().to_string());
     let active_audio = state.active_audio.clone();
-    let config = match ChirperConfig::load_default() {
+    let mut config = match ChirperConfig::load_default() {
         Ok(config) => config,
         Err(error) => {
             state.workflow = WorkflowState::Idle;
@@ -261,6 +261,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
             return response;
         }
     };
+    learn_vocabulary_from_transcript(&mut config, &transcript);
 
     state.workflow = WorkflowState::Formatting;
     let formatted = match format_transcript(&config, &transcript) {
@@ -343,6 +344,30 @@ fn apply_active_audio(response: &mut ApiResponse, active_audio: Option<&ActiveAu
     }
 }
 
+fn learn_vocabulary_from_transcript(config: &mut ChirperConfig, transcript: &Transcript) {
+    for entry in learn_spelling_vocabulary(&transcript.text) {
+        if let Err(error) =
+            ChirperConfig::save_default_vocabulary_entry(&entry.spoken, &entry.written)
+        {
+            eprintln!(
+                "failed to save vocabulary entry `{}` -> `{}`: {error}",
+                entry.spoken, entry.written
+            );
+            continue;
+        }
+
+        if let Some(existing) = config
+            .vocabulary
+            .iter_mut()
+            .find(|existing| existing.spoken == entry.spoken)
+        {
+            existing.written = entry.written;
+        } else {
+            config.vocabulary.push(entry);
+        }
+    }
+}
+
 fn transcribe_audio(
     config: &ChirperConfig,
     audio: &chirper_core::CapturedAudio,
@@ -378,9 +403,11 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
 }
 
 fn format_with_rules(config: &ChirperConfig, transcript: &Transcript) -> Result<String, String> {
-    RuleFormatter
-        .format(transcript, config.dictation_mode)
-        .map_err(|error| error.to_string())
+    Ok(format_spoken_rules_with_vocabulary(
+        &transcript.text,
+        config.dictation_mode,
+        &config.vocabulary,
+    ))
 }
 
 fn copy_text(text: &str) -> Result<(), String> {

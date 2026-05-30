@@ -2,12 +2,14 @@ use std::process::{Command, Stdio};
 
 use chirper_core::{
     ChirperConfig, ChirperError, ChirperResult, DictationMode, Formatter, Transcript,
+    VocabularyEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaOptions {
     pub command: String,
     pub model: String,
+    pub vocabulary: Vec<VocabularyEntry>,
 }
 
 impl OllamaOptions {
@@ -15,6 +17,7 @@ impl OllamaOptions {
         Self {
             command: config.ollama_command.clone(),
             model: config.ollama_model.clone(),
+            vocabulary: config.vocabulary.clone(),
         }
     }
 }
@@ -51,9 +54,11 @@ impl Formatter for OllamaFormatter {
     fn format(&self, transcript: &Transcript, mode: DictationMode) -> ChirperResult<String> {
         self.ensure_model_installed()?;
 
-        let prompt = build_formatting_prompt(&transcript.text, mode);
+        let prompt = build_formatting_prompt(&transcript.text, mode, &self.options.vocabulary);
         let output = Command::new(&self.options.command)
             .arg("run")
+            .arg("--nowordwrap")
+            .arg("--hidethinking")
             .arg(&self.options.model)
             .arg(prompt)
             .stdin(Stdio::null())
@@ -121,14 +126,40 @@ pub fn parse_ollama_list(stdout: &str) -> Vec<OllamaModel> {
         .collect()
 }
 
-fn build_formatting_prompt(text: &str, mode: DictationMode) -> String {
+fn build_formatting_prompt(
+    text: &str,
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> String {
+    let vocabulary_section = if vocabulary.is_empty() {
+        "Preferred spellings: none configured.\n".to_string()
+    } else {
+        let mut section =
+            "Preferred spellings. Apply these exact spellings when the spoken phrase appears:\n"
+                .to_string();
+        for entry in vocabulary {
+            section.push_str(&format!(
+                "- \"{}\" => \"{}\"\n",
+                entry.spoken, entry.written
+            ));
+        }
+        section
+    };
+
     format!(
         "\
 You format dictated speech into final text.
 
 Return only the final text. Do not explain, summarize, add facts, or wrap the result in quotes.
-Preserve the speaker's meaning and wording. Fix casing, punctuation, spacing, and paragraph breaks.
+You are a conservative proofreader for speech-to-text output, not a rewriting assistant.
+Preserve the speaker's meaning, wording, order, and all ordinary content words.
+Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
+The input has already passed through Chirper's local rules and preferred spelling preprocessor.
+Do not reinterpret spelling commands, duplicate corrected names, or undo existing corrections.
 If the text looks like code, shell input, Markdown, a URL, or an email address, preserve that structure.
+Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
+Do not add line breaks unless the input already contains them or the user clearly dictated a paragraph break.
+{vocabulary_section}
 If the input is empty or contains no speech, return an empty string.
 
 Mode: {mode:?}
@@ -143,10 +174,35 @@ Final text:"
 }
 
 fn clean_model_output(stdout: &str) -> String {
-    let mut output = stdout.trim().to_string();
+    let mut output = strip_terminal_controls(stdout).trim().to_string();
 
     if let Some(stripped) = output.strip_prefix("Final text:") {
         output = stripped.trim().to_string();
+    }
+
+    output
+}
+
+fn strip_terminal_controls(input: &str) -> String {
+    let mut output = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if character != '\r' {
+            output.push(character);
+        }
     }
 
     output
@@ -181,16 +237,25 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
 
     #[test]
     fn prompt_contains_mode_and_input() {
-        let prompt = build_formatting_prompt("hello comma world", DictationMode::Standard);
+        let prompt = build_formatting_prompt(
+            "hello comma world",
+            DictationMode::Standard,
+            &[VocabularyEntry {
+                spoken: "silas on linux".to_string(),
+                written: "SilasOnLinux".to_string(),
+            }],
+        );
 
         assert!(prompt.contains("Mode: Standard"));
         assert!(prompt.contains("hello comma world"));
         assert!(prompt.contains("Return only the final text"));
+        assert!(prompt.contains("\"silas on linux\" => \"SilasOnLinux\""));
     }
 
     #[test]
     fn cleans_common_prefix_but_preserves_markdown_fences() {
         assert_eq!(clean_model_output("Final text: Hello."), "Hello.");
         assert_eq!(clean_model_output("```\nHello.\n```"), "```\nHello.\n```");
+        assert_eq!(clean_model_output("Hel\u{1b}[1D\u{1b}[Klo\r."), "Hello.");
     }
 }

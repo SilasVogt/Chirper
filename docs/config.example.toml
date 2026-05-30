@@ -45,3 +45,9 @@ whisper_language = "auto"
 # and `chirper formatter-use ollama <model>` to select a local model.
 ollama_command = "ollama"
 ollama_model = "llama3.2"
+
+# Learned and manually configured preferred spellings. The rules preprocessor
+# applies these before the optional Ollama proofreader sees the text.
+[vocabulary]
+"silas on linux" = "SilasOnLinux"
+"prepped" = "Prepd"
