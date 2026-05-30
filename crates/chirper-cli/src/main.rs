@@ -1,6 +1,8 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::PathBuf,
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -9,7 +11,7 @@ use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, DictationMode, Formatter, FormatterBackend,
-    ServiceCommand, TextInserter, WorkflowState,
+    ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_rules::RuleFormatter;
 use chirper_insertion_clipboard::ClipboardInserter;
@@ -36,6 +38,26 @@ fn main() {
 
     if matches!(first.as_deref(), Some("diagnose")) {
         diagnose();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("model-current")) {
+        model_current();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("model-list")) {
+        model_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("model-use")) {
+        model_use(args.next());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("model-download")) {
+        model_download(args.collect());
         return;
     }
 
@@ -270,6 +292,290 @@ fn print_path_status(status: &chirper_platform::PathStatus) {
     println!("  {}: {} ({})", status.label, path, status.exists);
 }
 
+fn model_current() {
+    let config = load_config_or_exit();
+    let path = config
+        .whispercpp_model_path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unset>".to_string());
+
+    println!("model: {}", config.whisper_model);
+    println!("path: {path}");
+}
+
+fn model_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let installed = installed_models();
+    let current_installed = config
+        .whispercpp_model_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+
+    if json {
+        let installed_json = installed
+            .values()
+            .map(|model| {
+                serde_json::json!({
+                    "name": model.name,
+                    "path": model.path,
+                    "bytes": model.bytes,
+                })
+            })
+            .collect::<Vec<_>>();
+        let available_json = WHISPER_MODEL_NAMES
+            .iter()
+            .map(|model| {
+                serde_json::json!({
+                    "name": model,
+                    "installed": installed.contains_key(*model),
+                    "path": ChirperConfig::default_model_path(model),
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "current": {
+                "name": config.whisper_model,
+                "path": config.whispercpp_model_path,
+                "installed": current_installed,
+            },
+            "model_dir": ChirperConfig::default_model_dir(),
+            "installed": installed_json,
+            "available": available_json,
+        });
+
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("current:");
+    println!("  model: {}", config.whisper_model);
+    println!(
+        "  path: {}",
+        config
+            .whispercpp_model_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unset>".to_string())
+    );
+    println!("  installed: {current_installed}");
+    println!();
+    println!("installed:");
+
+    if installed.is_empty() {
+        println!(
+            "  none found in {}",
+            ChirperConfig::default_model_dir().display()
+        );
+    } else {
+        for model in installed.values() {
+            println!(
+                "  {:<24} {:>8}  {}",
+                model.name,
+                format_bytes(model.bytes),
+                model.path.display()
+            );
+        }
+    }
+
+    println!();
+    println!("download examples:");
+    for model in ["base", "small", "medium", "large-v3-turbo"] {
+        println!("  chirper model-download {model} --select");
+    }
+}
+
+fn model_use(selection: Option<String>) {
+    let Some(selection) = selection else {
+        eprintln!("usage: chirper model-use <model-name|/path/to/ggml-model.bin>");
+        std::process::exit(1);
+    };
+
+    let (model, path) = match resolve_model_selection(&selection) {
+        Ok(selection) => selection,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(error) = ChirperConfig::save_default_model_selection(&model, &path) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected whisper model: {model}");
+    println!("path: {}", path.display());
+    println!("the daemon will use this for the next transcription");
+}
+
+fn model_download(args: Vec<String>) {
+    let mut model = None;
+    let mut select = false;
+
+    for arg in args {
+        if arg == "--select" {
+            select = true;
+        } else if model.is_none() {
+            model = Some(arg);
+        } else {
+            eprintln!("usage: chirper model-download <model-name> [--select]");
+            std::process::exit(1);
+        }
+    }
+
+    let Some(model) = model else {
+        eprintln!("usage: chirper model-download <model-name> [--select]");
+        std::process::exit(1);
+    };
+
+    if !WHISPER_MODEL_NAMES.contains(&model.as_str()) {
+        eprintln!("unknown whisper model: {model}");
+        eprintln!("run `chirper model-list` for common model names");
+        std::process::exit(1);
+    }
+
+    let script = whispercpp_download_script();
+    if !script.exists() {
+        eprintln!(
+            "whisper.cpp download script not found: {}",
+            script.display()
+        );
+        eprintln!("run `scripts/setup-whispercpp.sh --backend vulkan --model {model}` first");
+        std::process::exit(1);
+    }
+
+    let model_dir = ChirperConfig::default_model_dir();
+    if let Err(error) = fs::create_dir_all(&model_dir) {
+        eprintln!(
+            "failed to create model directory {}: {error}",
+            model_dir.display()
+        );
+        std::process::exit(1);
+    }
+
+    let status = match Command::new(&script)
+        .arg(&model)
+        .arg(&model_dir)
+        .stdin(Stdio::null())
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("failed to run {}: {error}", script.display());
+            std::process::exit(1);
+        }
+    };
+
+    if !status.success() {
+        eprintln!("model download failed with status {status}");
+        std::process::exit(1);
+    }
+
+    let path = ChirperConfig::default_model_path(&model);
+    println!("downloaded whisper model: {model}");
+    println!("path: {}", path.display());
+
+    if select {
+        if let Err(error) = ChirperConfig::save_default_model_selection(&model, &path) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+
+        println!("selected whisper model: {model}");
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InstalledModel {
+    name: String,
+    path: PathBuf,
+    bytes: u64,
+}
+
+fn installed_models() -> BTreeMap<String, InstalledModel> {
+    let mut models = BTreeMap::new();
+    let Ok(entries) = fs::read_dir(ChirperConfig::default_model_dir()) else {
+        return models;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = ChirperConfig::model_name_from_path(&path) else {
+            continue;
+        };
+        let bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+
+        models.insert(name.clone(), InstalledModel { name, path, bytes });
+    }
+
+    models
+}
+
+fn resolve_model_selection(selection: &str) -> Result<(String, PathBuf), String> {
+    let path = expand_user_path(selection);
+    let looks_like_path = selection.contains('/') || selection.ends_with(".bin");
+
+    if looks_like_path {
+        if !path.exists() {
+            return Err(format!("model file not found: {}", path.display()));
+        }
+
+        let model = ChirperConfig::model_name_from_path(&path).unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("custom")
+                .to_string()
+        });
+
+        return Ok((model, path));
+    }
+
+    let model = selection.to_string();
+    let path = ChirperConfig::default_model_path(&model);
+
+    if path.exists() {
+        return Ok((model, path));
+    }
+
+    if WHISPER_MODEL_NAMES.contains(&selection) {
+        Err(format!(
+            "model `{selection}` is not installed at {}\nrun `chirper model-download {selection} --select`",
+            path.display()
+        ))
+    } else {
+        Err(format!(
+            "unknown or missing model `{selection}`\nrun `chirper model-list` to see installed models"
+        ))
+    }
+}
+
+fn expand_user_path(value: &str) -> PathBuf {
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+
+    PathBuf::from(value)
+}
+
+fn whispercpp_download_script() -> PathBuf {
+    ChirperConfig::default_data_dir().join("src/whisper.cpp/models/download-ggml-model.sh")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+
+    if bytes >= MIB {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 fn copy_test(text: String) {
     if text.is_empty() {
         eprintln!("usage: chirper copy-test <text>");
@@ -457,6 +763,8 @@ fn print_status() {
         "whisper_language: {}",
         config.whisper_language.as_deref().unwrap_or("auto")
     );
+    println!("ollama_command: {}", config.ollama_command);
+    println!("ollama_model: {}", config.ollama_model);
 }
 
 fn parse_format_test_args(args: Vec<String>) -> (DictationMode, String) {
@@ -487,13 +795,7 @@ fn parse_format_test_args(args: Vec<String>) -> (DictationMode, String) {
 }
 
 fn configured_mode() -> DictationMode {
-    match ChirperConfig::load_default() {
-        Ok(config) => config.dictation_mode,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    }
+    load_config_or_exit().dictation_mode
 }
 
 fn parse_mode_name(value: &str) -> Option<DictationMode> {
@@ -508,13 +810,7 @@ fn parse_mode_name(value: &str) -> Option<DictationMode> {
 }
 
 fn format_text(text: &str, mode: DictationMode) -> String {
-    let config = match ChirperConfig::load_default() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
+    let config = load_config_or_exit();
 
     match config.formatter_backend {
         FormatterBackend::None => text.to_string(),
@@ -542,13 +838,7 @@ fn format_text(text: &str, mode: DictationMode) -> String {
 }
 
 fn transcribe_audio(audio: chirper_core::CapturedAudio) -> chirper_core::Transcript {
-    let config = match ChirperConfig::load_default() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
+    let config = load_config_or_exit();
 
     let options = match WhisperCppOptions::from_config(&config) {
         Ok(options) => options,
@@ -561,6 +851,16 @@ fn transcribe_audio(audio: chirper_core::CapturedAudio) -> chirper_core::Transcr
     let asr = WhisperCppAsr::new(options);
     match asr.transcribe(&audio) {
         Ok(transcript) => transcript,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn load_config_or_exit() -> ChirperConfig {
+    match ChirperConfig::load_default() {
+        Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);

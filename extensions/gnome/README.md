@@ -9,6 +9,7 @@ It provides:
 - one primary Start/Stop Recording action
 - default `Ctrl+Alt+Space` toggle hotkey
 - optional paste-after-stop behavior
+- Whisper model selection and common model downloads
 - an animated recording/processing overlay
 - a settings submenu with daemon and config actions
 

@@ -12,6 +12,11 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 Gio._promisify(Gio.SocketClient.prototype, 'connect_async', 'connect_finish');
 Gio._promisify(Gio.OutputStream.prototype, 'write_bytes_async');
+Gio._promisify(
+    Gio.Subprocess.prototype,
+    'communicate_utf8_async',
+    'communicate_utf8_finish'
+);
 Gio._promisify(Gio.Subprocess.prototype, 'wait_check_async', 'wait_check_finish');
 Gio._promisify(
     Gio.DataInputStream.prototype,
@@ -25,6 +30,7 @@ const OVERLAY_HEIGHT = 82;
 const DAEMON_SERVICE = 'chirper-daemon.service';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
+const COMMON_WHISPER_DOWNLOADS = ['base', 'small', 'medium', 'large-v3-turbo'];
 
 function daemonSocketPath() {
     const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR');
@@ -79,6 +85,31 @@ async function controlDaemonService(action, cancellable = null) {
     await process.wait_check_async(cancellable);
 }
 
+async function runCommand(argv, cancellable = null) {
+    const process = Gio.Subprocess.new(
+        argv,
+        Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+    );
+    const [stdout, stderr] = await process.communicate_utf8_async(null, cancellable);
+
+    if (!process.get_successful())
+        throw new Error(stderr.trim() || `${argv[0]} failed`);
+
+    return stdout;
+}
+
+function loadJsonFile(path) {
+    const file = Gio.File.new_for_path(path);
+
+    try {
+        const [, contents] = file.load_contents(null);
+        return JSON.parse(new TextDecoder().decode(contents));
+    } catch (error) {
+        console.debug(`Chirper: failed to load ${path}: ${error.message}`);
+        return {};
+    }
+}
+
 function sleep(milliseconds) {
     return new Promise(resolve => {
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, milliseconds, () => {
@@ -107,6 +138,7 @@ export default class ChirperExtension extends Extension {
         this._enabled = true;
         this._cancellable = new Gio.Cancellable();
         this._settings = this.getSettings();
+        this._runtime = loadJsonFile(GLib.build_filenamev([this.path, 'runtime.json']));
         this._pendingStatus = false;
         this._lastState = 'unknown';
         this._lastFocusedWindow = null;
@@ -184,6 +216,9 @@ export default class ChirperExtension extends Extension {
         this._primarySubLabel = null;
         this._shortcutLabel = null;
         this._pasteSwitch = null;
+        this._modelMenu = null;
+        this._ollamaMenu = null;
+        this._runtime = null;
         this._settings = null;
     }
 
@@ -257,6 +292,20 @@ export default class ChirperExtension extends Extension {
 
         settingsMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        this._modelMenu = new PopupMenu.PopupSubMenuMenuItem('Whisper Model');
+        settingsMenu.menu.addMenuItem(this._modelMenu);
+        this._modelMenu.menu.addMenuItem(this._disabledItem('Loading models'));
+        this._modelMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._refreshModelMenu();
+        });
+
+        this._ollamaMenu = new PopupMenu.PopupSubMenuMenuItem('Ollama Model');
+        settingsMenu.menu.addMenuItem(this._ollamaMenu);
+        this._ollamaMenu.menu.addMenuItem(this._disabledItem('Formatter backend not implemented yet'));
+
+        settingsMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
         const refreshItem = new PopupMenu.PopupMenuItem('Refresh Status');
         refreshItem.connect('activate', () => {
             this._refreshStatus(true);
@@ -277,6 +326,7 @@ export default class ChirperExtension extends Extension {
 
         this._syncShortcutLabel();
         this._syncPrimaryAction();
+        this._refreshModelMenu();
     }
 
     _buildOverlay() {
@@ -435,6 +485,90 @@ export default class ChirperExtension extends Extension {
             if (this._enabled && !this._cancellable?.is_cancelled())
                 Main.notify('Chirper', `Failed to ${action} daemon: ${error.message}`);
         }
+    }
+
+    async _refreshModelMenu() {
+        if (!this._modelMenu)
+            return;
+
+        this._modelMenu.menu.removeAll();
+
+        try {
+            const output = await this._runCli(['model-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current?.name ?? 'unset';
+            const installed = data.installed ?? [];
+            const available = data.available ?? [];
+            const installedNames = new Set(installed.map(model => model.name));
+
+            this._modelMenu.label.text = `Whisper Model: ${current}`;
+            this._modelMenu.menu.addMenuItem(this._disabledItem(`Current: ${current}`));
+            this._modelMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            if (installed.length === 0) {
+                this._modelMenu.menu.addMenuItem(this._disabledItem('No local models found'));
+            } else {
+                for (const model of installed) {
+                    const label = model.name === current ? `✓ ${model.name}` : model.name;
+                    const item = new PopupMenu.PopupMenuItem(label);
+                    item.connect('activate', () => {
+                        this._selectWhisperModel(model.name);
+                    });
+                    this._modelMenu.menu.addMenuItem(item);
+                }
+            }
+
+            this._modelMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._modelMenu.menu.addMenuItem(this._disabledItem('Download and Select'));
+
+            for (const name of COMMON_WHISPER_DOWNLOADS) {
+                if (!available.some(model => model.name === name) || installedNames.has(name))
+                    continue;
+
+                const item = new PopupMenu.PopupMenuItem(name);
+                item.connect('activate', () => {
+                    this._downloadWhisperModel(name);
+                });
+                this._modelMenu.menu.addMenuItem(item);
+            }
+        } catch (error) {
+            this._modelMenu.label.text = 'Whisper Model';
+            this._modelMenu.menu.addMenuItem(this._disabledItem('Model controls unavailable'));
+            this._modelMenu.menu.addMenuItem(this._disabledItem(error.message));
+        }
+    }
+
+    async _selectWhisperModel(model) {
+        try {
+            await this._runCli(['model-use', model]);
+            Main.notify('Chirper', `Selected Whisper model: ${model}`);
+            await this._refreshModelMenu();
+        } catch (error) {
+            Main.notify('Chirper', `Failed to select model: ${error.message}`);
+        }
+    }
+
+    async _downloadWhisperModel(model) {
+        Main.notify('Chirper', `Downloading Whisper model: ${model}`);
+
+        try {
+            await this._runCli(['model-download', model, '--select']);
+            Main.notify('Chirper', `Selected Whisper model: ${model}`);
+            await this._refreshModelMenu();
+        } catch (error) {
+            Main.notify('Chirper', `Failed to download model: ${error.message}`);
+        }
+    }
+
+    async _runCli(args) {
+        const cliPath = this._runtime.cliPath || 'chirper';
+        return await runCommand([cliPath, ...args], this._cancellable);
+    }
+
+    _disabledItem(label) {
+        const item = new PopupMenu.PopupMenuItem(label);
+        item.setSensitive(false);
+        return item;
     }
 
     _applyLocalState(state, message) {

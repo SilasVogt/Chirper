@@ -37,6 +37,7 @@ dependencies = [
  "chirper-insertion-clipboard",
  "chirper-platform",
  "libc",
+ "serde_json",
 ]
 
 [[package]]

@@ -72,7 +72,8 @@ states. The overlay is shown while recording or processing and uses a subtle
 pulse animation.
 
 The settings submenu currently includes paste behavior, status refresh, daemon
-restart, and config folder actions.
+restart, Whisper model selection/downloads, an Ollama placeholder, and config
+folder actions.
 
 ## Paste Behavior
 
@@ -93,6 +94,16 @@ Ctrl+Alt+Space
 ```
 
 It starts recording from idle and stops/pastes while recording.
+
+## Model Settings
+
+The `Whisper Model` submenu lists installed local models and common downloadable
+models. Selecting a model updates `~/.config/chirper/config.toml`; the daemon
+uses the updated model on the next transcription.
+
+The `Ollama Model` submenu is present as a placeholder for the local LLM
+formatter work. The config already has `ollama_command` and `ollama_model`
+fields, but the formatter backend itself is still on the roadmap.
 
 ## Design Boundary
 

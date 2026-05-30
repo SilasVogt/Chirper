@@ -33,6 +33,14 @@ To smoke-test a whisper.cpp transcription once `whisper-cli` and a model are ava
 cargo run -p chirper-cli -- transcribe-file /path/to/audio.wav /path/to/ggml-base.bin
 ```
 
+To list, download, or switch Whisper models:
+
+```sh
+cargo run -p chirper-cli -- model-list
+cargo run -p chirper-cli -- model-download small --select
+cargo run -p chirper-cli -- model-use base
+```
+
 To smoke-test the first end-to-end local loop:
 
 ```sh

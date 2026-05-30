@@ -6,6 +6,39 @@ use std::{
 
 use crate::{ChirperError, ChirperResult, DictationMode};
 
+pub const WHISPER_MODEL_NAMES: &[&str] = &[
+    "tiny",
+    "tiny.en",
+    "tiny-q5_1",
+    "tiny.en-q5_1",
+    "tiny-q8_0",
+    "base",
+    "base.en",
+    "base-q5_1",
+    "base.en-q5_1",
+    "base-q8_0",
+    "small",
+    "small.en",
+    "small.en-tdrz",
+    "small-q5_1",
+    "small.en-q5_1",
+    "small-q8_0",
+    "medium",
+    "medium.en",
+    "medium-q5_0",
+    "medium.en-q5_0",
+    "medium-q8_0",
+    "large-v1",
+    "large-v2",
+    "large-v2-q5_0",
+    "large-v2-q8_0",
+    "large-v3",
+    "large-v3-q5_0",
+    "large-v3-turbo",
+    "large-v3-turbo-q5_0",
+    "large-v3-turbo-q8_0",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChirperConfig {
     pub audio_backend: AudioBackend,
@@ -18,6 +51,8 @@ pub struct ChirperConfig {
     pub whispercpp_command: String,
     pub whispercpp_model_path: Option<PathBuf>,
     pub whisper_language: Option<String>,
+    pub ollama_command: String,
+    pub ollama_model: String,
 }
 
 impl Default for ChirperConfig {
@@ -33,6 +68,8 @@ impl Default for ChirperConfig {
             whispercpp_command: "whisper-cli".to_string(),
             whispercpp_model_path: None,
             whisper_language: None,
+            ollama_command: "ollama".to_string(),
+            ollama_model: "llama3.2".to_string(),
         }
     }
 }
@@ -107,6 +144,14 @@ impl ChirperConfig {
             config.whisper_language = parse_optional_string("whisper_language", value)?;
         }
 
+        if let Some(value) = table.get("ollama_command") {
+            config.ollama_command = parse_string("ollama_command", value)?.to_string();
+        }
+
+        if let Some(value) = table.get("ollama_model") {
+            config.ollama_model = parse_string("ollama_model", value)?.to_string();
+        }
+
         Ok(config)
     }
 
@@ -120,6 +165,90 @@ impl ChirperConfig {
         }
 
         PathBuf::from("chirper/config.toml")
+    }
+
+    pub fn default_data_dir() -> PathBuf {
+        if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(data_home).join("chirper");
+        }
+
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".local/share/chirper");
+        }
+
+        PathBuf::from("chirper")
+    }
+
+    pub fn default_model_dir() -> PathBuf {
+        Self::default_data_dir().join("models")
+    }
+
+    pub fn default_model_path(model: &str) -> PathBuf {
+        Self::default_model_dir().join(format!("ggml-{model}.bin"))
+    }
+
+    pub fn model_name_from_path(path: impl AsRef<Path>) -> Option<String> {
+        let filename = path.as_ref().file_name()?.to_str()?;
+        let name = filename.strip_prefix("ggml-")?.strip_suffix(".bin")?;
+
+        Some(name.to_string())
+    }
+
+    pub fn save_model_selection(
+        path: impl AsRef<Path>,
+        model: &str,
+        model_path: impl AsRef<Path>,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = if path.exists() {
+            let content = fs::read_to_string(path).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to read config file {}: {source}",
+                    path.display()
+                ))
+            })?;
+
+            content.parse::<toml::Table>().map_err(|source| {
+                ChirperError::Configuration(format!("failed to parse config TOML: {source}"))
+            })?
+        } else {
+            toml::Table::new()
+        };
+
+        table.insert(
+            "whisper_model".to_string(),
+            toml::Value::String(model.to_string()),
+        );
+        table.insert(
+            "whispercpp_model_path".to_string(),
+            toml::Value::String(model_path.as_ref().display().to_string()),
+        );
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to create config directory {}: {source}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let content = toml::to_string_pretty(&table).map_err(|source| {
+            ChirperError::Configuration(format!("failed to encode config TOML: {source}"))
+        })?;
+        fs::write(path, content).map_err(|source| {
+            ChirperError::Configuration(format!(
+                "failed to write config file {}: {source}",
+                path.display()
+            ))
+        })
+    }
+
+    pub fn save_default_model_selection(
+        model: &str,
+        model_path: impl AsRef<Path>,
+    ) -> ChirperResult<()> {
+        Self::save_model_selection(Self::default_path(), model, model_path)
     }
 }
 
@@ -308,6 +437,8 @@ mod tests {
             whispercpp_command = "/opt/whisper.cpp/build/bin/whisper-cli"
             whispercpp_model_path = "/models/ggml-small.bin"
             whisper_language = "en"
+            ollama_command = "/usr/bin/ollama"
+            ollama_model = "llama3.1:8b"
             "#,
         )
         .unwrap();
@@ -323,6 +454,8 @@ mod tests {
             Some(PathBuf::from("/models/ggml-small.bin"))
         );
         assert_eq!(config.whisper_language, Some("en".to_string()));
+        assert_eq!(config.ollama_command, "/usr/bin/ollama");
+        assert_eq!(config.ollama_model, "llama3.1:8b");
     }
 
     #[test]
@@ -330,5 +463,42 @@ mod tests {
         let config = ChirperConfig::from_toml_str(r#"formatter_backend = "rule-based""#).unwrap();
 
         assert_eq!(config.formatter_backend, FormatterBackend::Rules);
+    }
+
+    #[test]
+    fn derives_model_name_from_standard_ggml_path() {
+        let model = ChirperConfig::model_name_from_path("/models/ggml-large-v3-turbo-q5_0.bin");
+
+        assert_eq!(model, Some("large-v3-turbo-q5_0".to_string()));
+    }
+
+    #[test]
+    fn save_model_selection_updates_model_fields() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "model"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            formatter_backend = "rules"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_model_selection(&path, "small", "/models/ggml-small.bin").unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.formatter_backend, FormatterBackend::Rules);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(
+            config.whispercpp_model_path,
+            Some(PathBuf::from("/models/ggml-small.bin"))
+        );
+
+        let _ = fs::remove_file(path);
     }
 }

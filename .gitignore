@@ -2,6 +2,7 @@
 **/*.rs.bk
 *.shell-extension.zip
 extensions/gnome/*/schemas/gschemas.compiled
+extensions/gnome/*/runtime.json
 
 # Local runtime data
 /.chirper/

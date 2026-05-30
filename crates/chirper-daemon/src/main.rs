@@ -16,21 +16,13 @@ use chirper_formatter_rules::RuleFormatter;
 use chirper_insertion_clipboard::ClipboardInserter;
 
 fn main() {
-    let config = match ChirperConfig::load_default() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-
-    if let Err(error) = run(config) {
+    if let Err(error) = run() {
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
-fn run(config: ChirperConfig) -> Result<(), String> {
+fn run() -> Result<(), String> {
     let socket_path = default_socket_path();
     prepare_socket_path(&socket_path)?;
 
@@ -49,7 +41,7 @@ fn run(config: ChirperConfig) -> Result<(), String> {
             }
         };
 
-        if handle_connection(stream, &config, &mut state) {
+        if handle_connection(stream, &mut state) {
             break;
         }
     }
@@ -79,11 +71,7 @@ fn prepare_socket_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_connection(
-    mut stream: UnixStream,
-    config: &ChirperConfig,
-    state: &mut DaemonState,
-) -> bool {
+fn handle_connection(mut stream: UnixStream, state: &mut DaemonState) -> bool {
     let request = match read_request(&mut stream) {
         Ok(request) => request,
         Err(error) => {
@@ -93,7 +81,7 @@ fn handle_connection(
         }
     };
 
-    let (response, should_shutdown) = handle_request(request, config, state);
+    let (response, should_shutdown) = handle_request(request, state);
     if let Err(error) = write_response(&mut stream, &response) {
         eprintln!("{error}");
     }
@@ -125,23 +113,19 @@ fn write_response(stream: &mut UnixStream, response: &ApiResponse) -> Result<(),
         .map_err(|source| format!("failed to write API response: {source}"))
 }
 
-fn handle_request(
-    request: ApiRequest,
-    config: &ChirperConfig,
-    state: &mut DaemonState,
-) -> (ApiResponse, bool) {
+fn handle_request(request: ApiRequest, state: &mut DaemonState) -> (ApiResponse, bool) {
     let should_shutdown = matches!(request, ApiRequest::Shutdown);
     let response = match request {
         ApiRequest::Status => status_response(state),
         ApiRequest::Toggle => {
             if state.workflow == WorkflowState::Recording {
-                stop_recording(config, state)
+                stop_recording(state)
             } else {
                 start_recording(state)
             }
         }
         ApiRequest::StartRecording => start_recording(state),
-        ApiRequest::StopRecording => stop_recording(config, state),
+        ApiRequest::StopRecording => stop_recording(state),
         ApiRequest::Shutdown => ApiResponse::ok(state_name(state.workflow), "daemon shutting down"),
     };
 
@@ -197,7 +181,7 @@ fn start_recording(state: &mut DaemonState) -> ApiResponse {
     response
 }
 
-fn stop_recording(config: &ChirperConfig, state: &mut DaemonState) -> ApiResponse {
+fn stop_recording(state: &mut DaemonState) -> ApiResponse {
     if state.workflow != WorkflowState::Recording {
         return ApiResponse::error(
             state_name(state.workflow),
@@ -221,9 +205,18 @@ fn stop_recording(config: &ChirperConfig, state: &mut DaemonState) -> ApiRespons
         }
     };
     let recording_path = Some(audio.path.display().to_string());
+    let config = match ChirperConfig::load_default() {
+        Ok(config) => config,
+        Err(error) => {
+            state.workflow = WorkflowState::Idle;
+            let mut response = ApiResponse::error(state_name(state.workflow), error.to_string());
+            response.recording_path = recording_path;
+            return response;
+        }
+    };
 
     state.workflow = WorkflowState::Transcribing;
-    let transcript = match transcribe_audio(config, &audio) {
+    let transcript = match transcribe_audio(&config, &audio) {
         Ok(transcript) => transcript,
         Err(error) => {
             state.workflow = WorkflowState::Idle;
@@ -234,7 +227,7 @@ fn stop_recording(config: &ChirperConfig, state: &mut DaemonState) -> ApiRespons
     };
 
     state.workflow = WorkflowState::Formatting;
-    let formatted = match format_transcript(config, &transcript) {
+    let formatted = match format_transcript(&config, &transcript) {
         Ok(formatted) => formatted,
         Err(error) => {
             state.workflow = WorkflowState::Idle;

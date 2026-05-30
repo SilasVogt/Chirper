@@ -7,13 +7,19 @@ prefix="${XDG_DATA_HOME:-$HOME/.local/share}/chirper"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/setup-whispercpp.sh [--backend auto|cpu|vulkan|rocm] [--model base|small|medium|large-v3] [--prefix PATH]
+Usage: scripts/setup-whispercpp.sh [--backend auto|cpu|vulkan|rocm] [--model MODEL] [--prefix PATH]
 
 Builds whisper.cpp locally and downloads a ggml model for Chirper.
 
 Examples:
   scripts/setup-whispercpp.sh --backend vulkan --model base
   scripts/setup-whispercpp.sh --backend rocm --model small
+
+Common models:
+  base, small, medium, large-v3, large-v3-turbo
+
+Quantized variants such as small-q8_0 and large-v3-turbo-q5_0 are also
+accepted when whisper.cpp's download script supports them.
 USAGE
 }
 

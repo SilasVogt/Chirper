@@ -20,6 +20,13 @@ if [[ -d "$target_dir/schemas" ]]; then
   glib-compile-schemas "$target_dir/schemas"
 fi
 
+cat > "$target_dir/runtime.json" <<JSON
+{
+  "repoPath": "$repo_root",
+  "cliPath": "$repo_root/target/debug/chirper"
+}
+JSON
+
 echo "Installed $uuid to $target_dir"
 
 if gnome-extensions info "$uuid" >/dev/null 2>&1; then

@@ -31,6 +31,16 @@ After installing CMake, run:
 scripts/setup-whispercpp.sh --backend vulkan --model base
 ```
 
+To download and switch to a larger model later:
+
+```sh
+cargo run -p chirper-cli -- model-download small --select
+cargo run -p chirper-cli -- model-use small
+```
+
+The daemon reloads config when a recording is stopped, so model changes apply to
+the next transcription without restarting the service.
+
 For ROCm/HIP later:
 
 ```sh
@@ -50,6 +60,29 @@ and downloads models under:
 ```
 
 It prints the config snippet to add to `~/.config/chirper/config.toml`.
+
+## Model Selection
+
+List installed models:
+
+```sh
+cargo run -p chirper-cli -- model-list
+```
+
+Select an installed model by name:
+
+```sh
+cargo run -p chirper-cli -- model-use small
+```
+
+Select an arbitrary ggml model path:
+
+```sh
+cargo run -p chirper-cli -- model-use /path/to/ggml-large-v3-turbo.bin
+```
+
+The GNOME extension settings submenu uses the same CLI commands for graphical
+model switching and downloads.
 
 ## Notes
 

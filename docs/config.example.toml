@@ -31,3 +31,8 @@ whispercpp_model_path = ""
 
 # Empty or "auto" lets whisper.cpp choose. Use "en", "de", etc. to force one.
 whisper_language = "auto"
+
+# Future local LLM formatting backend. These are not used until the Ollama
+# formatter backend lands, but settings UIs can already expose the selection.
+ollama_command = "ollama"
+ollama_model = "llama3.2"
