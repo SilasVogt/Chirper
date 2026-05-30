@@ -54,6 +54,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add raw-only formatter comparison mode.
 - [x] Add formatter comparison reports with hardware and telemetry.
 - [x] Add Codex CLI profiles to formatter comparison.
+- [x] Add GTK/libadwaita formatter comparison app.
 - [ ] Add snippets.
 - [ ] Add app/context profiles.
 

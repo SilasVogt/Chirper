@@ -194,10 +194,12 @@ cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
 mkdir -p "$bin_dir"
 ln -sf "$repo_root/target/$target_dir/chirper" "$bin_dir/chirper"
 ln -sf "$repo_root/target/$target_dir/chirper-daemon" "$bin_dir/chirper-daemon"
+ln -sf "$repo_root/scripts/run-model-compare.sh" "$bin_dir/chirper-model-compare"
 
 echo "Linked binaries:"
 echo "  $bin_dir/chirper"
 echo "  $bin_dir/chirper-daemon"
+echo "  $bin_dir/chirper-model-compare"
 
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   echo

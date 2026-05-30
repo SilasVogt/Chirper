@@ -158,7 +158,10 @@ default formatter. For side-by-side prompt testing:
 ```sh
 chirper format-compare --prompt-input raw --report-dir ./reports "your transcript"
 chirper format-compare --prompt-input both --report-dir ./reports "your transcript"
+chirper-model-compare
 ```
+
+The GTK compare app exposes the same compare options without remembering flags.
 
 To compare Codex CLI settings instead of local Ollama models, first check that
 Codex is available:
@@ -166,6 +169,7 @@ Codex is available:
 ```sh
 chirper codex-current
 chirper codex-list
+chirper codex-profile-add fast --model gpt-5.5 --effort low --fast
 chirper format-compare --no-ollama --codex --report-dir ./reports "your transcript"
 ```
 

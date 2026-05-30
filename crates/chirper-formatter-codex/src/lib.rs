@@ -106,6 +106,17 @@ impl CodexFormatter {
         mode: DictationMode,
         input: CodexPromptInput,
     ) -> ChirperResult<String> {
+        self.format_with_prompt_input_and_note(raw_transcript, preprocessed_text, mode, input, None)
+    }
+
+    pub fn format_with_prompt_input_and_note(
+        &self,
+        raw_transcript: &Transcript,
+        preprocessed_text: &str,
+        mode: DictationMode,
+        input: CodexPromptInput,
+        prompt_note: Option<&str>,
+    ) -> ChirperResult<String> {
         let prompt = build_formatting_prompt(
             &raw_transcript.text,
             match input {
@@ -114,6 +125,7 @@ impl CodexFormatter {
             },
             mode,
             &self.options.vocabulary,
+            prompt_note,
         );
         let output_path = codex_output_path();
         let work_dir = env::temp_dir();
@@ -258,6 +270,7 @@ fn build_formatting_prompt(
     preprocessed_text: Option<&str>,
     mode: DictationMode,
     vocabulary: &[VocabularyEntry],
+    prompt_note: Option<&str>,
 ) -> String {
     let vocabulary_section = if vocabulary.is_empty() {
         "Preferred spellings: none configured.\n".to_string()
@@ -308,6 +321,18 @@ Raw transcript:
 "
         ),
     };
+    let extra_instruction_section = prompt_note
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(|note| {
+            format!(
+                "\
+Additional compare-run instructions:
+{note}
+"
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         "\
@@ -329,6 +354,7 @@ If the text looks like code, shell input, Markdown, a URL, or an email address, 
 Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
 Do not add line breaks unless the input already contains them or the user clearly dictated a paragraph break.
 {vocabulary_section}
+{extra_instruction_section}
 If the input is empty or contains no speech, return an empty string.
 
 Mode: {mode:?}
@@ -410,7 +436,8 @@ mod tests {
 
     #[test]
     fn prompt_supports_raw_only_mode() {
-        let prompt = build_formatting_prompt("hello comma world", None, DictationMode::Auto, &[]);
+        let prompt =
+            build_formatting_prompt("hello comma world", None, DictationMode::Auto, &[], None);
 
         assert!(prompt.contains("You receive only the raw transcript"));
         assert!(!prompt.contains("Preprocessed draft:"));

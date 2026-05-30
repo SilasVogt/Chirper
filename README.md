@@ -18,6 +18,8 @@ This repo is early but usable for local testing on Linux. The current path is:
 - daemon API for frontends
 - GNOME Shell 50 extension with recording controls, overlay, model selection,
   audio input selection, and settings
+- GTK/libadwaita model compare app for testing Ollama and Codex formatter
+  configurations
 
 ## Install
 
@@ -81,6 +83,7 @@ crates/chirper-api      shared local API request/response types
 crates/chirper-daemon   background service and local API server
 crates/chirper-cli      command-line control/debug client
 crates/chirper-formatter-*  formatter backends
+apps/model-compare      GTK/libadwaita model comparison utility
 extensions/gnome        GNOME Shell extension frontend
 ```
 

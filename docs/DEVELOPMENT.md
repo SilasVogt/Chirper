@@ -86,15 +86,16 @@ To inspect and select Codex CLI formatting:
 cargo run -p chirper-cli -- codex-current
 cargo run -p chirper-cli -- codex-list
 cargo run -p chirper-cli -- codex-use gpt-5.5 --effort low --fast
+cargo run -p chirper-cli -- codex-profile-add fast --model gpt-5.5 --effort low --fast
 cargo run -p chirper-cli -- formatter-use codex
 ```
 
 Codex formatting calls `codex exec` non-interactively with a read-only sandbox,
 no approvals, an ephemeral session, and `--output-last-message`. It uses the
 installed Codex auth/config. `codex-use` writes Chirper's top-level Codex
-settings; named comparison profiles live under `[codex_profiles.<name>]` in the
-config file. `--fast` stores Codex's `priority` service tier, which the Codex UI
-labels as Fast.
+settings. `codex-profile-add` saves named comparison profiles under
+`[codex_profiles.<name>]`. `--fast` stores Codex's `priority` service tier,
+which the Codex UI labels as Fast.
 
 The Ollama formatter always runs after the rules preprocessor. Its prompt
 includes the raw transcript plus the preprocessed draft; the draft is treated as
@@ -108,11 +109,13 @@ the saved daemon configuration:
 cargo run -p chirper-cli -- format-compare "hello comma world"
 cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-input raw "hello comma world"
+cargo run -p chirper-cli -- format-compare --prompt-note "Prefer exact casing instructions." "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-preprocessor "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-ollama --codex "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-ollama --codex-profile fast "hello comma world"
 cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma world"
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
+scripts/run-model-compare.sh
 ```
 
 The command runs models sequentially so timing stays meaningful and large models
@@ -122,9 +125,15 @@ pass `--keep-loaded` only when intentionally testing warm repeated generations.
 By default the Ollama prompt receives both the raw transcript and the rules
 preprocessed draft. Use `--prompt-input raw` to test a model without that draft,
 or `--no-preprocessor` to hide rules output and send only the raw transcript.
+Use `--prompt-note` or `--prompt-file` to add comparison-only prompt
+instructions without changing the daemon formatter prompt.
 `--report-dir` writes a durable text report with the raw input, preprocessed
 draft, model outputs, timings, hardware snapshot, and best-effort average
 CPU/RAM/GPU/VRAM/power telemetry from `/proc` and `/sys`.
+
+`scripts/run-model-compare.sh` opens the GTK/libadwaita compare app. It exposes
+the same main options as checkboxes, model tickboxes, Codex profile management,
+prompt notes, and report folder selection.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

@@ -63,7 +63,8 @@ What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`
 - builds `chirper` and `chirper-daemon` in release mode
-- symlinks both binaries into `~/.local/bin`
+- symlinks `chirper`, `chirper-daemon`, and `chirper-model-compare` into
+  `~/.local/bin`
 - builds whisper.cpp with `--backend auto --model base`
 - writes a starter config only if `~/.config/chirper/config.toml` does not exist
 - installs and starts `chirper-daemon.service` as a user systemd service
@@ -100,6 +101,8 @@ cargo build --release -p chirper-cli -p chirper-daemon
 scripts/setup-whispercpp.sh --backend vulkan --model base --write-config
 CHIRPER_BUILD_PROFILE=release scripts/install-systemd-user-service.sh
 CHIRPER_BUILD_PROFILE=release scripts/install-gnome-extension.sh
+mkdir -p ~/.local/bin
+ln -sf "$PWD/scripts/run-model-compare.sh" ~/.local/bin/chirper-model-compare
 ```
 
 Enable the extension:
@@ -149,11 +152,14 @@ To compare all installed Ollama models on the same transcript:
 ```sh
 chirper format-compare "hello comma world period"
 chirper format-compare --report-dir ./chirper-reports "hello comma world period"
+chirper-model-compare
 ```
 
 The compare command runs models sequentially and unloads each model afterward by
 default. Reports include model output, timing, a hardware snapshot, and
 best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
+`chirper-model-compare` opens a simple GTK app with tickboxes for installed
+Ollama models, saved Codex configs, prompt-input options, and report storage.
 
 ## Codex CLI Formatting
 
@@ -166,9 +172,9 @@ chirper codex-list
 chirper codex-use gpt-5.5 --effort low --fast
 ```
 
-For comparison runs, define `[codex_profiles.<name>]` entries in
-`~/.config/chirper/config.toml`, then run:
+For comparison runs, save named Codex configs and then run:
 
 ```sh
+chirper codex-profile-add fast --model gpt-5.5 --effort low --fast
 chirper format-compare --no-ollama --codex-profile fast --report-dir ./chirper-reports "hello comma world period"
 ```

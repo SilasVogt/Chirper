@@ -167,6 +167,22 @@ fn main() {
         return;
     }
 
+    if matches!(
+        first.as_deref(),
+        Some("codex-profile-add") | Some("codex-profile-set")
+    ) {
+        codex_profile_add(args.collect());
+        return;
+    }
+
+    if matches!(
+        first.as_deref(),
+        Some("codex-profile-remove") | Some("codex-profile-delete")
+    ) {
+        codex_profile_remove(args.collect());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("codex-profiles")) {
         codex_profiles(args.collect());
         return;
@@ -1259,13 +1275,193 @@ fn codex_profiles(args: Vec<String>) {
 
     if config.codex_profiles.is_empty() {
         println!("no Codex profiles configured");
-        println!("add [codex_profiles.fast] entries to ~/.config/chirper/config.toml");
+        println!("run `chirper codex-profile-add fast --model gpt-5.5 --effort low --fast`");
         return;
     }
 
     println!("Codex profiles:");
     for profile in &config.codex_profiles {
         println!("  {}", format_codex_profile_summary(profile));
+    }
+}
+
+fn codex_profile_add(args: Vec<String>) {
+    let mut name = None;
+    let mut model = None;
+    let mut profile = None;
+    let mut reasoning_effort = None;
+    let mut service_tier = None;
+    let mut config_overrides = Vec::new();
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--name=") {
+            name = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--name" {
+            name = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--model=") {
+            model = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--model" {
+            model = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--profile=") {
+            profile = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--profile" {
+            profile = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--effort=") {
+            reasoning_effort = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--effort" || arg == "--reasoning-effort" {
+            reasoning_effort = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--service-tier=") {
+            service_tier = normalize_optional_cli_value(value);
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--tier=") {
+            service_tier = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--service-tier" || arg == "--tier" {
+            service_tier = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            push_config_override(&mut config_overrides, value);
+            index += 1;
+        } else if arg == "--config" {
+            if let Some(value) = args.get(index + 1) {
+                push_config_override(&mut config_overrides, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--fast" {
+            service_tier = Some("priority".to_string());
+            index += 1;
+        } else if arg == "--extra-high" || arg == "--xhigh" {
+            reasoning_effort = Some("xhigh".to_string());
+            index += 1;
+        } else if arg == "--high" || arg == "--medium" || arg == "--low" {
+            reasoning_effort = Some(arg.trim_start_matches("--").to_string());
+            index += 1;
+        } else if name.is_none() {
+            name = normalize_optional_cli_value(arg);
+            index += 1;
+        } else {
+            eprintln!(
+                "usage: chirper codex-profile-add NAME [--model MODEL] [--effort low|medium|high|xhigh] [--service-tier priority] [--fast] [--profile CODEX_PROFILE] [--config key=value]"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let Some(name) = name else {
+        eprintln!(
+            "usage: chirper codex-profile-add NAME [--model MODEL] [--effort low|medium|high|xhigh] [--service-tier priority] [--fast] [--profile CODEX_PROFILE] [--config key=value]"
+        );
+        std::process::exit(1);
+    };
+    let profile_config = CodexProfileConfig {
+        name,
+        model,
+        profile,
+        reasoning_effort,
+        service_tier,
+        config_overrides,
+    };
+
+    if let Err(error) = ChirperConfig::save_default_codex_profile(profile_config.clone()) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&codex_profile_json(&profile_config)).unwrap()
+        );
+        return;
+    }
+
+    println!(
+        "saved Codex profile {}",
+        format_codex_profile_summary(&profile_config)
+    );
+}
+
+fn codex_profile_remove(args: Vec<String>) {
+    let mut name = None;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--name=") {
+            name = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--name" {
+            name = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if name.is_none() {
+            name = normalize_optional_cli_value(arg);
+            index += 1;
+        } else {
+            eprintln!("usage: chirper codex-profile-remove NAME");
+            std::process::exit(1);
+        }
+    }
+
+    let Some(name) = name else {
+        eprintln!("usage: chirper codex-profile-remove NAME");
+        std::process::exit(1);
+    };
+
+    let removed = match ChirperConfig::remove_default_codex_profile(&name) {
+        Ok(removed) => removed,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    if json {
+        let value = serde_json::json!({
+            "name": name,
+            "removed": removed,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    if removed {
+        println!("removed Codex profile {name}");
+    } else {
+        println!("Codex profile {name} was not configured");
     }
 }
 
@@ -1829,6 +2025,7 @@ struct FormatCompareArgs {
     include_rules: bool,
     keep_loaded: bool,
     prompt_input: ComparePromptInput,
+    prompt_note: Option<String>,
     report_dir: Option<PathBuf>,
     json: bool,
     text: String,
@@ -1868,7 +2065,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--prompt-file PATH] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
         );
         std::process::exit(1);
     }
@@ -1936,11 +2133,12 @@ fn format_compare(args: Vec<String>) {
         });
         let started = Instant::now();
         let (result, metrics) = run_with_resource_sampling(|| {
-            formatter.format_with_prompt_input(
+            formatter.format_with_prompt_input_and_note(
                 &transcript,
                 &preformatted,
                 args.mode,
                 args.prompt_input.as_ollama_input(),
+                args.prompt_note.as_deref(),
             )
         });
         let elapsed_ms = started.elapsed().as_millis();
@@ -1970,11 +2168,12 @@ fn format_compare(args: Vec<String>) {
         let formatter = CodexFormatter::new(options);
         let started = Instant::now();
         let (result, metrics) = run_with_resource_sampling(|| {
-            formatter.format_with_prompt_input(
+            formatter.format_with_prompt_input_and_note(
                 &transcript,
                 &preformatted,
                 args.mode,
                 args.prompt_input.as_codex_input(),
+                args.prompt_note.as_deref(),
             )
         });
         let elapsed_ms = started.elapsed().as_millis();
@@ -2003,6 +2202,7 @@ fn format_compare(args: Vec<String>) {
             &hardware,
             args.mode,
             args.prompt_input,
+            args.prompt_note.as_deref(),
             &transcript.text,
             &preformatted,
             &results,
@@ -2013,6 +2213,7 @@ fn format_compare(args: Vec<String>) {
         let value = serde_json::json!({
             "mode": format!("{:?}", args.mode),
             "prompt_input": args.prompt_input.label(),
+            "prompt_note": args.prompt_note.as_deref(),
             "preprocessed_sent_to_model": args.prompt_input == ComparePromptInput::RawAndPreprocessed,
             "preprocessed": preformatted,
             "hardware": hardware_json(&hardware),
@@ -2029,6 +2230,9 @@ fn format_compare(args: Vec<String>) {
 
     println!("mode: {:?}", args.mode);
     println!("prompt_input: {}", args.prompt_input.label());
+    if let Some(prompt_note) = args.prompt_note.as_deref() {
+        println!("prompt_note: {prompt_note}");
+    }
     println!("hardware:");
     print_hardware_snapshot(&hardware);
     if args.prompt_input == ComparePromptInput::RawAndPreprocessed {
@@ -2075,6 +2279,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut include_rules = true;
     let mut keep_loaded = false;
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
+    let mut prompt_note = None;
     let mut report_dir = None;
     let mut json = false;
     let mut text = Vec::new();
@@ -2172,6 +2377,26 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             prompt_input = ComparePromptInput::RawOnly;
             include_rules = false;
             index += 1;
+        } else if let Some(value) = arg.strip_prefix("--prompt-note=") {
+            prompt_note = Some(value.to_string());
+            index += 1;
+        } else if arg == "--prompt-note" || arg == "--prompt" {
+            if let Some(value) = args.get(index + 1) {
+                prompt_note = Some(value.to_string());
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--prompt-file=") {
+            prompt_note = Some(read_prompt_note_file(value));
+            index += 1;
+        } else if arg == "--prompt-file" {
+            if let Some(value) = args.get(index + 1) {
+                prompt_note = Some(read_prompt_note_file(value));
+                index += 2;
+            } else {
+                index += 1;
+            }
         } else if let Some(value) = arg.strip_prefix("--report-dir=") {
             report_dir = Some(expand_user_path(value));
             index += 1;
@@ -2202,6 +2427,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         include_rules,
         keep_loaded,
         prompt_input,
+        prompt_note,
         report_dir,
         json,
         text: text.join(" "),
@@ -2216,6 +2442,14 @@ fn parse_compare_prompt_input(value: &str) -> Option<ComparePromptInput> {
         }
         _ => None,
     }
+}
+
+fn read_prompt_note_file(path: &str) -> String {
+    let path = expand_user_path(path);
+    fs::read_to_string(&path).unwrap_or_else(|source| {
+        eprintln!("failed to read prompt file {}: {source}", path.display());
+        std::process::exit(1);
+    })
 }
 
 fn push_model_values(models: &mut Vec<String>, value: &str) {
@@ -2740,6 +2974,7 @@ fn write_format_compare_report(
     hardware: &HardwareSnapshot,
     mode: DictationMode,
     prompt_input: ComparePromptInput,
+    prompt_note: Option<&str>,
     raw_transcript: &str,
     preprocessed: &str,
     results: &[FormatCompareResult],
@@ -2762,6 +2997,10 @@ fn write_format_compare_report(
     let _ = writeln!(report, "generated_unix_seconds: {timestamp}");
     let _ = writeln!(report, "mode: {mode:?}");
     let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
+    if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
+        let _ = writeln!(report, "prompt_note:");
+        let _ = writeln!(report, "{prompt_note}");
+    }
     let _ = writeln!(report);
     let _ = writeln!(report, "Hardware:");
     write_hardware_snapshot(&mut report, hardware);

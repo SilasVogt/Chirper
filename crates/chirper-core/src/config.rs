@@ -465,6 +465,97 @@ impl ChirperConfig {
         write_config_table(path, &table)
     }
 
+    pub fn save_codex_profile(
+        path: impl AsRef<Path>,
+        profile: CodexProfileConfig,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        let name = profile.name.trim();
+
+        if name.is_empty() {
+            return Err(ChirperError::Configuration(
+                "Codex profile name cannot be empty".to_string(),
+            ));
+        }
+
+        if !table.contains_key("codex_profiles") {
+            table.insert(
+                "codex_profiles".to_string(),
+                toml::Value::Table(toml::Table::new()),
+            );
+        }
+
+        let profiles = table
+            .get_mut("codex_profiles")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| {
+                ChirperError::Configuration(
+                    "config key `codex_profiles` must be a table".to_string(),
+                )
+            })?;
+        let mut profile_table = toml::Table::new();
+
+        set_optional_string(&mut profile_table, "model", profile.model.as_deref());
+        set_optional_string(&mut profile_table, "profile", profile.profile.as_deref());
+        set_optional_string(
+            &mut profile_table,
+            "reasoning_effort",
+            profile.reasoning_effort.as_deref(),
+        );
+        set_optional_string(
+            &mut profile_table,
+            "service_tier",
+            profile.service_tier.as_deref(),
+        );
+
+        if !profile.config_overrides.is_empty() {
+            profile_table.insert(
+                "config_overrides".to_string(),
+                toml::Value::Array(
+                    profile
+                        .config_overrides
+                        .iter()
+                        .map(|value| toml::Value::String(value.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+
+        profiles.insert(name.to_string(), toml::Value::Table(profile_table));
+        write_config_table(path, &table)
+    }
+
+    pub fn remove_codex_profile(path: impl AsRef<Path>, name: &str) -> ChirperResult<bool> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        let name = name.trim();
+
+        if name.is_empty() {
+            return Err(ChirperError::Configuration(
+                "Codex profile name cannot be empty".to_string(),
+            ));
+        }
+
+        let removed = if let Some(value) = table.get_mut("codex_profiles") {
+            let profiles = value.as_table_mut().ok_or_else(|| {
+                ChirperError::Configuration(
+                    "config key `codex_profiles` must be a table".to_string(),
+                )
+            })?;
+            let removed = profiles.remove(name).is_some();
+            if profiles.is_empty() {
+                table.remove("codex_profiles");
+            }
+            removed
+        } else {
+            false
+        };
+
+        write_config_table(path, &table)?;
+        Ok(removed)
+    }
+
     pub fn save_vocabulary_entry(
         path: impl AsRef<Path>,
         spoken: &str,
@@ -554,6 +645,14 @@ impl ChirperConfig {
             config_overrides,
             enable,
         )
+    }
+
+    pub fn save_default_codex_profile(profile: CodexProfileConfig) -> ChirperResult<()> {
+        Self::save_codex_profile(Self::default_path(), profile)
+    }
+
+    pub fn remove_default_codex_profile(name: &str) -> ChirperResult<bool> {
+        Self::remove_codex_profile(Self::default_path(), name)
     }
 
     pub fn save_default_vocabulary_entry(spoken: &str, written: &str) -> ChirperResult<()> {
@@ -1197,6 +1296,50 @@ mod tests {
         assert_eq!(config.formatter_backend, FormatterBackend::Codex);
         assert_eq!(config.codex_model, None);
         assert_eq!(config.codex_config_overrides, Vec::<String>::new());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_and_remove_codex_profiles() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "codex-profile"
+        ));
+        fs::write(&path, r#"formatter_backend = "ollama""#).unwrap();
+
+        ChirperConfig::save_codex_profile(
+            &path,
+            CodexProfileConfig {
+                name: "fast".to_string(),
+                model: Some("gpt-5.5".to_string()),
+                profile: None,
+                reasoning_effort: Some("low".to_string()),
+                service_tier: Some("priority".to_string()),
+                config_overrides: vec!["model_verbosity=\"low\"".to_string()],
+            },
+        )
+        .unwrap();
+
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+        assert_eq!(config.formatter_backend, FormatterBackend::Ollama);
+        assert_eq!(config.codex_profiles.len(), 1);
+        assert_eq!(config.codex_profiles[0].name, "fast");
+        assert_eq!(config.codex_profiles[0].model, Some("gpt-5.5".to_string()));
+        assert_eq!(
+            config.codex_profiles[0].service_tier,
+            Some("priority".to_string())
+        );
+        assert_eq!(
+            config.codex_profiles[0].config_overrides,
+            vec!["model_verbosity=\"low\""]
+        );
+
+        assert!(ChirperConfig::remove_codex_profile(&path, "fast").unwrap());
+        assert!(!ChirperConfig::remove_codex_profile(&path, "missing").unwrap());
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+        assert!(config.codex_profiles.is_empty());
 
         let _ = fs::remove_file(path);
     }
