@@ -86,6 +86,18 @@ through a GNOME Shell virtual keyboard device.
 This is why paste should be triggered from the extension or its hotkey rather
 than by manually moving focus before stopping recording.
 
+Longer recordings and larger Whisper models can take minutes to transcribe. The
+extension keeps the stop request open with a long timeout and avoids retrying
+`stop_recording`, because a retry can reach the daemon after the first stop has
+already completed.
+
+## Audio Source
+
+PipeWire routing can choose the wrong capture target on complex audio setups.
+Chirper marks its `pw-record` stream as `Capture`, but users can also set
+`pipewire_target` in `~/.config/chirper/config.toml` to a `wpctl status` source
+id or PipeWire node name.
+
 ## Shortcut
 
 The default extension shortcut is:

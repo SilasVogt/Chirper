@@ -7,7 +7,7 @@ use std::{
 
 use chirper_api::{default_socket_path, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
-use chirper_audio_pipewire::PipeWireRecorder;
+use chirper_audio_pipewire::{PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, Formatter, FormatterBackend, TextInserter, Transcript,
     WorkflowState,
@@ -164,7 +164,14 @@ fn start_recording(state: &mut DaemonState) -> ApiResponse {
         );
     }
 
-    let mut recorder = PipeWireRecorder::default();
+    let config = match ChirperConfig::load_default() {
+        Ok(config) => config,
+        Err(error) => {
+            state.workflow = WorkflowState::Idle;
+            return ApiResponse::error(state_name(state.workflow), error.to_string());
+        }
+    };
+    let mut recorder = PipeWireRecorder::new(PipeWireRecorderOptions::from_config(&config));
     if let Err(error) = recorder.start_recording() {
         state.workflow = WorkflowState::Idle;
         return ApiResponse::error(state_name(state.workflow), error.to_string());

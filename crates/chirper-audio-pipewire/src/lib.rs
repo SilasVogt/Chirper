@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use chirper_core::{AudioSource, CapturedAudio, ChirperError, ChirperResult};
+use chirper_core::{AudioSource, CapturedAudio, ChirperConfig, ChirperError, ChirperResult};
 
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 16_000;
 const DEFAULT_CHANNELS: u16 = 1;
@@ -20,6 +20,7 @@ pub struct PipeWireRecorderOptions {
     pub sample_rate_hz: u32,
     pub channels: u16,
     pub command: String,
+    pub target: Option<String>,
 }
 
 impl Default for PipeWireRecorderOptions {
@@ -29,6 +30,16 @@ impl Default for PipeWireRecorderOptions {
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             channels: DEFAULT_CHANNELS,
             command: "pw-record".to_string(),
+            target: None,
+        }
+    }
+}
+
+impl PipeWireRecorderOptions {
+    pub fn from_config(config: &ChirperConfig) -> Self {
+        Self {
+            target: config.pipewire_target.clone(),
+            ..Self::default()
         }
     }
 }
@@ -242,13 +253,24 @@ fn spawn_pw_record(
 ) -> ChirperResult<Child> {
     let mut command = Command::new(&options.command);
     command
+        .arg("--media-category=Capture")
+        .arg("--media-role=Communication")
         .arg(format!("--channels={}", options.channels))
         .arg(format!("--rate={}", options.sample_rate_hz))
         .arg("--format=s16")
-        .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    if let Some(target) = options
+        .target
+        .as_deref()
+        .filter(|target| !target.is_empty())
+    {
+        command.arg(format!("--target={target}"));
+    }
+
+    command.arg(path);
 
     if detached {
         unsafe {
@@ -318,6 +340,18 @@ mod tests {
 
         assert_eq!(recorder.options.sample_rate_hz, 16_000);
         assert_eq!(recorder.options.channels, 1);
+        assert_eq!(recorder.options.target, None);
+    }
+
+    #[test]
+    fn recorder_options_use_configured_pipewire_target() {
+        let config = ChirperConfig {
+            pipewire_target: Some("alsa_input.example".to_string()),
+            ..ChirperConfig::default()
+        };
+        let options = PipeWireRecorderOptions::from_config(&config);
+
+        assert_eq!(options.target, Some("alsa_input.example".to_string()));
     }
 
     #[test]

@@ -42,6 +42,7 @@ pub const WHISPER_MODEL_NAMES: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChirperConfig {
     pub audio_backend: AudioBackend,
+    pub pipewire_target: Option<String>,
     pub asr_backend: AsrBackend,
     pub gpu_backend: GpuBackend,
     pub formatter_backend: FormatterBackend,
@@ -59,6 +60,7 @@ impl Default for ChirperConfig {
     fn default() -> Self {
         Self {
             audio_backend: AudioBackend::PipeWire,
+            pipewire_target: None,
             asr_backend: AsrBackend::WhisperCpp,
             gpu_backend: GpuBackend::Auto,
             formatter_backend: FormatterBackend::None,
@@ -106,6 +108,10 @@ impl ChirperConfig {
 
         if let Some(value) = table.get("audio_backend") {
             config.audio_backend = parse_config_value("audio_backend", value)?;
+        }
+
+        if let Some(value) = table.get("pipewire_target") {
+            config.pipewire_target = parse_optional_string("pipewire_target", value)?;
         }
 
         if let Some(value) = table.get("asr_backend") {
@@ -416,6 +422,7 @@ mod tests {
         let config = ChirperConfig::from_toml_str(r#"gpu_backend = "rocm""#).unwrap();
 
         assert_eq!(config.audio_backend, AudioBackend::PipeWire);
+        assert_eq!(config.pipewire_target, None);
         assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
         assert_eq!(config.insertion_backend, InsertionBackend::Clipboard);
@@ -429,6 +436,7 @@ mod tests {
         let config = ChirperConfig::from_toml_str(
             r#"
             asr_backend = "whisper-cpp"
+            pipewire_target = "alsa_input.usb-example.mic"
             gpu_backend = "HIP"
             formatter_backend = "llama.cpp"
             insertion_backend = "i_bus"
@@ -444,6 +452,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
+        assert_eq!(
+            config.pipewire_target,
+            Some("alsa_input.usb-example.mic".to_string())
+        );
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
         assert_eq!(config.formatter_backend, FormatterBackend::LlamaCpp);
         assert_eq!(config.insertion_backend, InsertionBackend::IBus);

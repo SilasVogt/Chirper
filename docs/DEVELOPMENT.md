@@ -27,6 +27,17 @@ To smoke-test PipeWire microphone capture:
 cargo run -p chirper-cli -- record-test 3
 ```
 
+If the recording captures desktop audio or a mixer feed instead of your mic,
+inspect available sources with:
+
+```sh
+wpctl status
+```
+
+Then set `pipewire_target` in `~/.config/chirper/config.toml` to the source id
+or node name you want Chirper to record. The daemon reads this when recording
+starts.
+
 To smoke-test a whisper.cpp transcription once `whisper-cli` and a model are available:
 
 ```sh

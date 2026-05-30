@@ -2,6 +2,14 @@
 # Default path: ~/.config/chirper/config.toml
 
 audio_backend = "pipewire"
+
+# Empty or "auto" lets WirePlumber choose the default source. If Chirper records
+# desktop playback or the wrong input, run `wpctl status` and set this to a
+# source id or node name, for example:
+# pipewire_target = "65"
+# pipewire_target = "alsa_input.usb-example.mic"
+pipewire_target = "auto"
+
 asr_backend = "whisper-cpp"
 
 # Start with "auto". On AMD, useful explicit values are "rocm" and "vulkan".

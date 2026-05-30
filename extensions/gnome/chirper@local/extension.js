@@ -25,6 +25,9 @@ Gio._promisify(
 );
 
 const POLL_SECONDS = 1;
+const STATUS_REQUEST_TIMEOUT_SECONDS = 2;
+const COMMAND_REQUEST_TIMEOUT_SECONDS = 15;
+const STOP_RECORDING_TIMEOUT_SECONDS = 30 * 60;
 const OVERLAY_WIDTH = 250;
 const OVERLAY_HEIGHT = 82;
 const DAEMON_SERVICE = 'chirper-daemon.service';
@@ -48,8 +51,12 @@ function daemonSocketPath() {
     return '/tmp/chirper/daemon.sock';
 }
 
-async function sendDaemonRequest(command, cancellable = null) {
-    const client = new Gio.SocketClient({timeout: 2});
+async function sendDaemonRequest(
+    command,
+    cancellable = null,
+    timeoutSeconds = STATUS_REQUEST_TIMEOUT_SECONDS
+) {
+    const client = new Gio.SocketClient({timeout: timeoutSeconds});
     const address = new Gio.UnixSocketAddress({path: daemonSocketPath()});
     const connection = await client.connect_async(address, cancellable);
 
@@ -411,7 +418,11 @@ export default class ChirperExtension extends Extension {
         this._pendingStatus = true;
 
         try {
-            const response = await sendDaemonRequest('status', this._cancellable);
+            const response = await sendDaemonRequest(
+                'status',
+                this._cancellable,
+                STATUS_REQUEST_TIMEOUT_SECONDS
+            );
             this._applyResponse(response);
         } catch (error) {
             if (this._enabled && !this._cancellable?.is_cancelled())
@@ -435,7 +446,10 @@ export default class ChirperExtension extends Extension {
         this._setPrimarySensitive(false);
 
         try {
-            const response = await this._sendCommandWithAutoStart('start_recording');
+            const response = await this._sendCommandWithAutoStart(
+                'start_recording',
+                COMMAND_REQUEST_TIMEOUT_SECONDS
+            );
             this._applyResponse(response);
 
             if (!response.ok)
@@ -456,7 +470,11 @@ export default class ChirperExtension extends Extension {
         this._applyLocalState('transcribing', 'Processing dictation');
 
         try {
-            const response = await this._sendCommandWithAutoStart('stop_recording');
+            const response = await sendDaemonRequest(
+                'stop_recording',
+                this._cancellable,
+                STOP_RECORDING_TIMEOUT_SECONDS
+            );
             this._applyResponse(response);
 
             if (!response.ok) {
@@ -476,13 +494,13 @@ export default class ChirperExtension extends Extension {
         }
     }
 
-    async _sendCommandWithAutoStart(command) {
+    async _sendCommandWithAutoStart(command, timeoutSeconds = COMMAND_REQUEST_TIMEOUT_SECONDS) {
         try {
-            return await sendDaemonRequest(command, this._cancellable);
+            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds);
         } catch (error) {
             await controlDaemonService('start', this._cancellable);
             await sleep(500);
-            return await sendDaemonRequest(command, this._cancellable);
+            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds);
         }
     }
 
