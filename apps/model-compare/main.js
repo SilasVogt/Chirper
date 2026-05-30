@@ -194,6 +194,90 @@ function hardwareSummary(hardware) {
     return parts.join(' | ') || 'Hardware unavailable';
 }
 
+function compactText(text, limit = 120) {
+    const compact = text.replace(/\s+/g, ' ').trim();
+    if (compact.length <= limit)
+        return compact;
+
+    return `${compact.slice(0, Math.max(0, limit - 1))}...`;
+}
+
+function safeVariantName(rawName, fallback) {
+    const name = rawName.trim().replace(/=/g, '-');
+    return name || fallback;
+}
+
+function uniqueName(baseName, usedNames) {
+    if (!usedNames.has(baseName))
+        return baseName;
+
+    let index = 2;
+    while (usedNames.has(`${baseName}-${index}`))
+        index += 1;
+
+    return `${baseName}-${index}`;
+}
+
+function quotePreviewArg(arg) {
+    if (/^[A-Za-z0-9_./:=,@+-]+$/.test(arg))
+        return arg;
+
+    return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+function commandPreview(argv) {
+    const sensitiveFlags = new Set([
+        '--custom-prompt',
+        '--model-prompt',
+        '--transcript',
+        '--case',
+        '--prompt-note',
+        '--prompt',
+    ]);
+    const output = [];
+    let redactNext = false;
+
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+
+        if (redactNext) {
+            output.push('<text>');
+            redactNext = false;
+            continue;
+        }
+
+        if (sensitiveFlags.has(arg)) {
+            output.push(arg);
+            redactNext = true;
+            continue;
+        }
+
+        if (arg.startsWith('--custom-prompt=') || arg.startsWith('--model-prompt=')) {
+            output.push('--custom-prompt=<text>');
+            continue;
+        }
+
+        if (arg.startsWith('--transcript=') || arg.startsWith('--case=')) {
+            output.push('--transcript=<text>');
+            continue;
+        }
+
+        if (arg.startsWith('--prompt-note=') || arg.startsWith('--prompt=')) {
+            output.push('--prompt-note=<text>');
+            continue;
+        }
+
+        if (index === argv.length - 1 && arg.length > 100 && !arg.startsWith('--')) {
+            output.push('<transcript>');
+            continue;
+        }
+
+        output.push(quotePreviewArg(arg));
+    }
+
+    return output.join(' ');
+}
+
 function makeButton(label, callback, cssClass = null) {
     const control = new Gtk.Button({
         label,
@@ -230,10 +314,16 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
 
         this._ollamaRows = new Map();
         this._codexRows = new Map();
+        this._promptRows = new Map();
+        this._transcriptRows = new Map();
         this._dynamicRows = [];
         this._runButton = null;
         this._refreshButton = null;
         this._addCodexButton = null;
+        this._addPromptButton = null;
+        this._addTranscriptButton = null;
+        this._nextPromptIndex = 1;
+        this._nextTranscriptIndex = 1;
         this._elapsedTimerId = 0;
         this._runStartedUsec = 0;
         this._progressTotal = 0;
@@ -275,6 +365,7 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         this.set_content(toolbarView);
 
         this._buildTranscriptGroup(main);
+        this._buildPromptVariationsGroup(main);
         this._buildOptionsGroup(main);
         this._buildOllamaGroup(main);
         this._buildCodexGroup(main);
@@ -287,6 +378,7 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
             title: 'Transcript',
             description: 'Paste a raw Whisper transcript or a written test case.',
         });
+        this._transcriptGroup = group;
         main.append(group);
 
         this._transcriptBuffer = new Gtk.TextBuffer();
@@ -309,6 +401,84 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         });
         frame.add_css_class('card');
         group.add(frame);
+
+        this._transcriptNameRow = new Adw.EntryRow({
+            title: 'New Case Name',
+            text: 'case-1',
+        });
+        group.add(this._transcriptNameRow);
+
+        const addCaseRow = new Adw.ActionRow({
+            title: 'Transcript Cases',
+            subtitle: 'Add the current transcript as a reusable selected test case.',
+        });
+        this._addTranscriptButton = makeButton(
+            'Add Case',
+            () => this._addTranscriptCase(),
+            'suggested-action'
+        );
+        addCaseRow.add_suffix(this._addTranscriptButton);
+        addCaseRow.activatable_widget = this._addTranscriptButton;
+        group.add(addCaseRow);
+    }
+
+    _buildPromptVariationsGroup(main) {
+        const group = new Adw.PreferencesGroup({
+            title: 'Prompt Variations',
+            description: 'Selected custom prompts run against every selected model and transcript case. Placeholders: {transcript}, {preprocessed}, {mode}, {vocabulary}.',
+        });
+        this._promptGroup = group;
+        main.append(group);
+
+        this._includeDefaultPromptRow = new Adw.SwitchRow({
+            title: 'Also Run Built-In Chirper Prompt',
+            subtitle: 'When custom prompts are selected, include Chirper\'s normal formatter prompt too.',
+            active: false,
+        });
+        group.add(this._includeDefaultPromptRow);
+
+        this._promptNameRow = new Adw.EntryRow({
+            title: 'New Prompt Name',
+            text: 'prompt-1',
+        });
+        group.add(this._promptNameRow);
+
+        this._promptTemplateBuffer = new Gtk.TextBuffer();
+        this._promptTemplateBuffer.set_text(
+            'Return only the cleaned-up final text. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, and identifiers. Do not explain.',
+            -1
+        );
+        const promptTemplateView = new Gtk.TextView({
+            buffer: this._promptTemplateBuffer,
+            wrap_mode: Gtk.WrapMode.WORD_CHAR,
+            top_margin: 10,
+            bottom_margin: 10,
+            left_margin: 12,
+            right_margin: 12,
+        });
+        promptTemplateView.add_css_class('view');
+
+        const promptTemplateFrame = new Gtk.ScrolledWindow({
+            min_content_height: 104,
+            max_content_height: 180,
+            hscrollbar_policy: Gtk.PolicyType.NEVER,
+            child: promptTemplateView,
+        });
+        promptTemplateFrame.add_css_class('card');
+        group.add(promptTemplateFrame);
+
+        const addPromptRow = new Adw.ActionRow({
+            title: 'Custom Prompt Variants',
+            subtitle: 'Each selected prompt writes its own report file.',
+        });
+        this._addPromptButton = makeButton(
+            'Add Prompt',
+            () => this._addPromptVariant(),
+            'suggested-action'
+        );
+        addPromptRow.add_suffix(this._addPromptButton);
+        addPromptRow.activatable_widget = this._addPromptButton;
+        group.add(addPromptRow);
     }
 
     _buildOptionsGroup(main) {
@@ -326,16 +496,9 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
             title: 'Prompt Input',
             subtitle: 'Choose whether models see rules output or only the raw transcript.',
             model: makeStringList(PROMPT_INPUT_OPTIONS),
-            selected: 0,
+            selected: 1,
         });
         group.add(this._promptInputRow);
-
-        this._includeRulesRow = new Adw.SwitchRow({
-            title: 'Show Rules Baseline',
-            subtitle: 'Include deterministic preprocessor output in the result.',
-            active: true,
-        });
-        group.add(this._includeRulesRow);
 
         this._keepLoadedRow = new Adw.SwitchRow({
             title: 'Keep Ollama Models Loaded',
@@ -655,6 +818,82 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         this._dynamicRows.push(row);
     }
 
+    _addTranscriptCase() {
+        const text = textFromBuffer(this._transcriptBuffer).trim();
+        if (!text) {
+            this._setStatus('Paste a transcript before adding a case');
+            return;
+        }
+
+        const fallback = `case-${this._nextTranscriptIndex}`;
+        const baseName = safeVariantName(entryText(this._transcriptNameRow), fallback);
+        const name = uniqueName(baseName, this._transcriptRows);
+        this._nextTranscriptIndex += 1;
+        this._transcriptNameRow.text = `case-${this._nextTranscriptIndex}`;
+
+        const { row, check } = makeCheckRow(name, compactText(text), true);
+        const removeButton = new Gtk.Button({
+            icon_name: 'user-trash-symbolic',
+            valign: Gtk.Align.CENTER,
+        });
+        removeButton.add_css_class('flat');
+        removeButton.set_tooltip_text(`Remove ${name}`);
+        removeButton.connect('clicked', () => this._removeTranscriptCase(name));
+        row.add_suffix(removeButton);
+
+        this._transcriptRows.set(name, { row, check, text });
+        this._transcriptGroup.add(row);
+        this._setStatus(`Added transcript case ${name}`);
+    }
+
+    _removeTranscriptCase(name) {
+        const item = this._transcriptRows.get(name);
+        if (!item)
+            return;
+
+        item.row.get_parent()?.remove(item.row);
+        this._transcriptRows.delete(name);
+        this._setStatus(`Removed transcript case ${name}`);
+    }
+
+    _addPromptVariant() {
+        const template = textFromBuffer(this._promptTemplateBuffer).trim();
+        if (!template) {
+            this._setStatus('Write a prompt before adding it');
+            return;
+        }
+
+        const fallback = `prompt-${this._nextPromptIndex}`;
+        const baseName = safeVariantName(entryText(this._promptNameRow), fallback);
+        const name = uniqueName(baseName, this._promptRows);
+        this._nextPromptIndex += 1;
+        this._promptNameRow.text = `prompt-${this._nextPromptIndex}`;
+
+        const { row, check } = makeCheckRow(name, compactText(template), true);
+        const removeButton = new Gtk.Button({
+            icon_name: 'user-trash-symbolic',
+            valign: Gtk.Align.CENTER,
+        });
+        removeButton.add_css_class('flat');
+        removeButton.set_tooltip_text(`Remove ${name}`);
+        removeButton.connect('clicked', () => this._removePromptVariant(name));
+        row.add_suffix(removeButton);
+
+        this._promptRows.set(name, { row, check, template });
+        this._promptGroup.add(row);
+        this._setStatus(`Added prompt variant ${name}`);
+    }
+
+    _removePromptVariant(name) {
+        const item = this._promptRows.get(name);
+        if (!item)
+            return;
+
+        item.row.get_parent()?.remove(item.row);
+        this._promptRows.delete(name);
+        this._setStatus(`Removed prompt variant ${name}`);
+    }
+
     async _addCodexProfile() {
         const name = entryText(this._codexNameRow);
         if (!name) {
@@ -707,14 +946,17 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
 
     async _runCompare() {
         const transcript = textFromBuffer(this._transcriptBuffer).trim();
-        if (!transcript) {
-            this._setStatus('Paste a transcript first');
+        const selectedTranscriptCases = [...this._transcriptRows.entries()]
+            .filter(([, item]) => item.check.active)
+            .map(([name, item]) => ({ name, text: item.text }));
+        if (!transcript && selectedTranscriptCases.length === 0) {
+            this._setStatus('Paste a transcript or select a transcript case first');
             return;
         }
 
-        const args = this._buildCompareArgs(transcript);
+        const args = this._buildCompareArgs(transcript, selectedTranscriptCases);
         this._resetRunProgress();
-        this._setOutput(`$ ${[cliPath(), ...args].join(' ')}\n\n`);
+        this._setOutput(`$ ${commandPreview([cliPath(), ...args])}\n\n`);
         this._setBusy(true, 'Running comparison');
         this._startElapsedTimer();
 
@@ -734,11 +976,14 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         }
     }
 
-    _buildCompareArgs(transcript) {
+    _buildCompareArgs(transcript, selectedTranscriptCases) {
         const args = ['format-compare', '--progress-json'];
         const mode = selectedOption(MODE_OPTIONS, this._modeRow);
         const promptInput = selectedOption(PROMPT_INPUT_OPTIONS, this._promptInputRow);
         const promptNote = textFromBuffer(this._promptNoteBuffer).trim();
+        const selectedPromptVariants = [...this._promptRows.entries()]
+            .filter(([, item]) => item.check.active)
+            .map(([name, item]) => ({ name, template: item.template }));
         const selectedOllamaModels = [...this._ollamaRows.entries()]
             .filter(([, item]) => item.check.active)
             .map(([name]) => name);
@@ -754,9 +999,6 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
             args.push('--no-preprocessor');
         else
             args.push('--prompt-input', 'both');
-
-        if (!this._includeRulesRow.active && promptInput !== 'none')
-            args.push('--no-rules');
 
         if (this._keepLoadedRow.active)
             args.push('--keep-loaded');
@@ -774,6 +1016,14 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         if (selectedCodexProfiles.length > 0)
             args.push('--codex-profile', selectedCodexProfiles.join(','));
 
+        if (selectedPromptVariants.length > 0) {
+            if (this._includeDefaultPromptRow.active)
+                args.push('--include-default-prompt');
+
+            for (const prompt of selectedPromptVariants)
+                args.push('--custom-prompt', `${prompt.name}=${prompt.template}`);
+        }
+
         if (promptNote)
             args.push('--prompt-note', promptNote);
 
@@ -781,7 +1031,13 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         if (this._writeReportRow.active && reportDir)
             args.push('--report-dir', reportDir);
 
-        args.push(transcript);
+        if (selectedTranscriptCases.length > 0) {
+            for (const transcriptCase of selectedTranscriptCases)
+                args.push('--transcript', `${transcriptCase.name}=${transcriptCase.text}`);
+        } else {
+            args.push(transcript);
+        }
+
         return args;
     }
 
@@ -811,9 +1067,13 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         case 'started':
             this._progressTotal = event.total ?? 0;
             this._hardwareRow.subtitle = hardwareSummary(event.hardware);
-            this._summaryRow.subtitle = this._progressTotal > 0
-                ? `Testing ${this._progressTotal} model targets`
-                : 'Rules-only comparison';
+            if (this._progressTotal > 0) {
+                const promptCount = event.prompt_variants?.length ?? 1;
+                const transcriptCount = event.transcripts?.length ?? 1;
+                this._summaryRow.subtitle = `Testing ${this._progressTotal} targets, ${promptCount} prompts, ${transcriptCount} transcripts`;
+            } else {
+                this._summaryRow.subtitle = 'No model targets';
+            }
             this._setProgress(0, this._progressTotal);
             break;
         case 'target_started':
@@ -837,16 +1097,24 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         }
         case 'finished': {
             this._setProgress(event.total ?? this._progressTotal, event.total ?? this._progressTotal);
-            const summary = `Tested ${event.tested_models ?? 0} Models in ${formatDurationMs(event.elapsed_ms ?? 0)}`;
-            this._summaryRow.subtitle = event.report_path
-                ? `${summary} | ${event.report_path}`
+            const summary = `Tested ${event.tested_models ?? 0} targets in ${formatDurationMs(event.elapsed_ms ?? 0)}`;
+            const reportPaths = event.report_paths ?? [];
+            const reportText = reportPaths.length > 1
+                ? `${reportPaths.length} reports`
+                : event.report_path;
+            this._summaryRow.subtitle = reportText
+                ? `${summary} | ${reportText}`
                 : summary;
             this._currentTargetRow.title = 'Complete';
             this._currentTargetRow.subtitle = summary;
             this._elapsedRow.subtitle = formatDurationMs(event.elapsed_ms ?? 0);
             this._appendOutput(`${summary}\n`);
-            if (event.report_path)
+            if (reportPaths.length > 0) {
+                for (const path of reportPaths)
+                    this._appendOutput(`Report: ${path}\n`);
+            } else if (event.report_path) {
                 this._appendOutput(`Report: ${event.report_path}\n`);
+            }
             break;
         }
         default:
@@ -907,6 +1175,10 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
             this._refreshButton.sensitive = !busy;
         if (this._addCodexButton)
             this._addCodexButton.sensitive = !busy;
+        if (this._addPromptButton)
+            this._addPromptButton.sensitive = !busy;
+        if (this._addTranscriptButton)
+            this._addTranscriptButton.sensitive = !busy;
         this._setStatus(status);
     }
 

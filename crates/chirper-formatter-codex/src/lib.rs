@@ -127,6 +127,19 @@ impl CodexFormatter {
             &self.options.vocabulary,
             prompt_note,
         );
+        let input_text = match input {
+            CodexPromptInput::RawOnly => &raw_transcript.text,
+            CodexPromptInput::RawAndPreprocessed => preprocessed_text,
+        };
+
+        self.format_custom_prompt(&prompt, input_text)
+    }
+
+    pub fn format_custom_prompt(
+        &self,
+        prompt: &str,
+        non_empty_input: &str,
+    ) -> ChirperResult<String> {
         let output_path = codex_output_path();
         let work_dir = env::temp_dir();
         let mut command = Command::new(&self.options.command);
@@ -221,12 +234,8 @@ impl CodexFormatter {
             .unwrap_or_else(|_| String::from_utf8_lossy(&output.stdout).to_string());
         let _ = fs::remove_file(&output_path);
         let formatted = clean_model_output(&final_message);
-        let input_text = match input {
-            CodexPromptInput::RawOnly => &raw_transcript.text,
-            CodexPromptInput::RawAndPreprocessed => preprocessed_text,
-        };
 
-        if formatted.is_empty() && !input_text.trim().is_empty() {
+        if formatted.is_empty() && !non_empty_input.trim().is_empty() {
             return Err(ChirperError::Formatting(
                 "codex returned an empty formatter response".to_string(),
             ));

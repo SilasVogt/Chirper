@@ -152,6 +152,9 @@ To compare all installed Ollama models on the same transcript:
 ```sh
 chirper format-compare "hello comma world period"
 chirper format-compare --report-dir ./chirper-reports "hello comma world period"
+chirper format-compare --custom-prompt "strict=Return only corrected final text." \
+  --transcript "case-1=hello comma world period" \
+  --report-dir ./chirper-reports
 chirper-model-compare
 ```
 
@@ -160,7 +163,9 @@ default. Reports include model output, timing, a hardware snapshot, and
 best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
 `chirper-model-compare` opens a simple GTK app with tickboxes for installed
 Ollama models, saved Codex configs, prompt-input options, report storage, live
-current-model progress, elapsed runtime, and hardware summary.
+current-model progress, elapsed runtime, hardware summary, custom prompt
+variants, and named transcript cases. Custom prompt comparisons write one report
+file per prompt variant.
 
 ## Codex CLI Formatting
 

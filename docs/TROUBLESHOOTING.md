@@ -130,7 +130,7 @@ chirper language-list
 chirper language-use id
 ```
 
-First compare rules-only output against the selected Ollama model:
+First compare deterministic rules output against the selected Ollama model:
 
 ```sh
 chirper formatter-use rules
@@ -158,10 +158,14 @@ default formatter. For side-by-side prompt testing:
 ```sh
 chirper format-compare --prompt-input raw --report-dir ./reports "your transcript"
 chirper format-compare --prompt-input both --report-dir ./reports "your transcript"
+chirper format-compare --custom-prompt "strict=Return only corrected final text." \
+  --transcript "case-1=your transcript" \
+  --report-dir ./reports
 chirper-model-compare
 ```
 
-The GTK compare app exposes the same compare options without remembering flags.
+The GTK compare app exposes the same compare options without remembering flags,
+including selected prompt variants and multiple transcript cases.
 
 To compare Codex CLI settings instead of local Ollama models, first check that
 Codex is available:

@@ -110,6 +110,8 @@ cargo run -p chirper-cli -- format-compare "hello comma world"
 cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-input raw "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-note "Prefer exact casing instructions." "hello comma world"
+cargo run -p chirper-cli -- format-compare --custom-prompt "strict=Return only corrected final text." "hello comma world"
+cargo run -p chirper-cli -- format-compare --custom-prompt-file strict=./prompt.txt --transcript "case-a=hello comma world" --transcript-file case-b=./transcript.txt
 cargo run -p chirper-cli -- format-compare --no-preprocessor "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-ollama --codex "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-ollama --codex-profile fast "hello comma world"
@@ -119,22 +121,31 @@ scripts/run-model-compare.sh
 ```
 
 The command runs models sequentially so timing stays meaningful and large models
-do not compete for VRAM. It includes the rules-only preprocessed output unless
-`--no-rules` is passed. Compared models are unloaded after each run by default;
+do not compete for VRAM. Compared models are unloaded after each run by default;
 pass `--keep-loaded` only when intentionally testing warm repeated generations.
 By default the Ollama prompt receives both the raw transcript and the rules
 preprocessed draft. Use `--prompt-input raw` to test a model without that draft,
-or `--no-preprocessor` to hide rules output and send only the raw transcript.
+or `--no-preprocessor` to send only the raw transcript.
 Use `--prompt-note` or `--prompt-file` to add comparison-only prompt
 instructions without changing the daemon formatter prompt.
-`--report-dir` writes a durable text report with the raw input, preprocessed
-draft, model outputs, timings, hardware snapshot, and best-effort average
-CPU/RAM/GPU/VRAM/power telemetry from `/proc` and `/sys`.
+Use `--custom-prompt` or `--custom-prompt-file` to test alternate prompt
+templates. If custom prompts are provided, Chirper runs only those prompts unless
+`--include-default-prompt` is passed. Prompt templates may contain
+`{transcript}`, `{preprocessed}`, `{mode}`, and `{vocabulary}` placeholders; if
+no transcript placeholder is present, Chirper appends the transcript block.
+Use `--transcript` and `--transcript-file` to add named transcript cases. The
+compare matrix is every selected model or Codex profile times every selected
+prompt times every transcript case.
+`--report-dir` writes durable text reports with raw transcript cases, model
+outputs, timings, hardware snapshot, and best-effort average
+CPU/RAM/GPU/VRAM/power telemetry from `/proc` and `/sys`. The report writer
+creates one file per prompt variant and intentionally omits preprocessed/rules
+baseline dumps so prompt results are easier to scan.
 
 `scripts/run-model-compare.sh` opens the GTK/libadwaita compare app. It exposes
 the same main options as checkboxes, model tickboxes, Codex profile management,
-prompt notes, report folder selection, live current-model progress, elapsed
-runtime, and hardware summary.
+prompt notes, custom prompt variants, transcript cases, report folder selection,
+live current-model progress, elapsed runtime, and hardware summary.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

@@ -19,7 +19,7 @@ This repo is early but usable for local testing on Linux. The current path is:
 - GNOME Shell 50 extension with recording controls, overlay, model selection,
   audio input selection, and settings
 - GTK/libadwaita model compare app for testing Ollama and Codex formatter
-  configurations
+  configurations across prompt variants and transcript cases
 
 ## Install
 

@@ -17,8 +17,8 @@ use chirper_api::{send_request, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AsrEngine, AudioSource, ChirperConfig, CodexProfileConfig, DictationMode, FormatterBackend,
-    ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
+    AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
+    FormatterBackend, ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -2026,6 +2026,9 @@ struct FormatCompareArgs {
     keep_loaded: bool,
     prompt_input: ComparePromptInput,
     prompt_note: Option<String>,
+    custom_prompts: Vec<NamedPromptTemplate>,
+    include_default_prompt: bool,
+    transcripts: Vec<NamedTranscript>,
     report_dir: Option<PathBuf>,
     progress_json: bool,
     json: bool,
@@ -2036,6 +2039,37 @@ struct FormatCompareArgs {
 enum ComparePromptInput {
     RawOnly,
     RawAndPreprocessed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamedPromptTemplate {
+    name: String,
+    template: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamedTranscript {
+    name: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComparePromptVariant {
+    name: String,
+    template: Option<String>,
+}
+
+impl ComparePromptVariant {
+    fn built_in() -> Self {
+        Self {
+            name: "chirper".to_string(),
+            template: None,
+        }
+    }
+
+    fn is_custom(&self) -> bool {
+        self.template.is_some()
+    }
 }
 
 impl ComparePromptInput {
@@ -2064,25 +2098,15 @@ impl ComparePromptInput {
 fn format_compare(args: Vec<String>) {
     let args = parse_format_compare_args(args);
 
-    if args.text.is_empty() {
+    if args.text.is_empty() && args.transcripts.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--prompt-file PATH] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
         );
         std::process::exit(1);
     }
 
     let config = load_config_or_exit();
-    let transcript = chirper_core::Transcript {
-        text: args.text.clone(),
-        language: None,
-    };
-    let preformatted = match format_with_rules(&config, &transcript, args.mode) {
-        Ok(text) => text,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
+    let transcript_cases = resolve_compare_transcripts(&args);
     let codex_requested =
         args.include_codex_current || args.all_codex_profiles || !args.codex_profiles.is_empty();
     let load_all_ollama = args.include_ollama
@@ -2105,16 +2129,17 @@ fn format_compare(args: Vec<String>) {
         Vec::new()
     };
     let codex_runs = resolve_codex_compare_runs(&config, &args);
+    let prompt_variants = resolve_compare_prompt_variants(&args);
 
-    if models.is_empty() && codex_runs.is_empty() && !args.include_rules {
-        eprintln!(
-            "no formatter targets selected; run `chirper ollama-list`, pass `--codex`, or enable rules output"
-        );
+    if models.is_empty() && codex_runs.is_empty() {
+        eprintln!("no formatter targets selected; run `chirper ollama-list` or pass `--codex`");
         std::process::exit(1);
     }
 
     let hardware = collect_hardware_snapshot(&config.ollama_command);
-    let total_targets = models.len() + codex_runs.len();
+    let prompt_variant_count = prompt_variants.len();
+    let transcript_count = transcript_cases.len();
+    let total_targets = (models.len() + codex_runs.len()) * prompt_variant_count * transcript_count;
     let compare_started = Instant::now();
     let mut results = Vec::new();
     emit_compare_progress(
@@ -2123,157 +2148,197 @@ fn format_compare(args: Vec<String>) {
             "type": "started",
             "total": total_targets,
             "include_rules": args.include_rules,
+            "prompt_variants": prompt_variants.iter().map(|variant| variant.name.as_str()).collect::<Vec<_>>(),
+            "transcripts": transcript_cases.iter().map(|case| case.name.as_str()).collect::<Vec<_>>(),
             "hardware": hardware_json(&hardware),
         }),
     );
 
-    if args.include_rules {
-        results.push(FormatCompareResult {
-            name: "rules".to_string(),
-            elapsed_ms: 0,
-            metrics: ResourceMetrics::default(),
-            output: Some(preformatted.clone()),
-            error: None,
-        });
-    }
-
     let mut target_index = 0usize;
 
-    for model in models {
-        target_index += 1;
-        emit_compare_progress(
-            &args,
-            serde_json::json!({
-                "type": "target_started",
-                "index": target_index,
-                "total": total_targets,
-                "name": model.as_str(),
-                "elapsed_ms": compare_started.elapsed().as_millis(),
-            }),
-        );
-        let formatter = OllamaFormatter::new(OllamaOptions {
-            command: config.ollama_command.clone(),
-            model: model.clone(),
-            vocabulary: config.vocabulary.clone(),
-        });
-        let started = Instant::now();
-        let (result, metrics) = run_with_resource_sampling(|| {
-            formatter.format_with_prompt_input_and_note(
-                &transcript,
-                &preformatted,
-                args.mode,
-                args.prompt_input.as_ollama_input(),
-                args.prompt_note.as_deref(),
-            )
-        });
-        let elapsed_ms = started.elapsed().as_millis();
-        if !args.keep_loaded {
-            stop_ollama_model_silent(&config.ollama_command, &model);
+    for transcript_case in &transcript_cases {
+        let transcript = chirper_core::Transcript {
+            text: transcript_case.text.clone(),
+            language: None,
+        };
+        let preformatted = match format_with_rules(&config, &transcript, args.mode) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+
+        for model in &models {
+            for prompt_variant in &prompt_variants {
+                target_index += 1;
+                let run_name = format_compare_run_name(
+                    model,
+                    prompt_variant,
+                    prompt_variant_count,
+                    transcript_case,
+                    transcript_count,
+                );
+                emit_compare_progress(
+                    &args,
+                    serde_json::json!({
+                        "type": "target_started",
+                        "index": target_index,
+                        "total": total_targets,
+                        "name": run_name.as_str(),
+                        "model": model.as_str(),
+                        "prompt": prompt_variant.name.as_str(),
+                        "transcript": transcript_case.name.as_str(),
+                        "elapsed_ms": compare_started.elapsed().as_millis(),
+                    }),
+                );
+                let formatter = OllamaFormatter::new(OllamaOptions {
+                    command: config.ollama_command.clone(),
+                    model: model.clone(),
+                    vocabulary: config.vocabulary.clone(),
+                });
+                let started = Instant::now();
+                let (result, metrics) = run_with_resource_sampling(|| {
+                    format_with_ollama_prompt_variant(
+                        &formatter,
+                        &transcript,
+                        &preformatted,
+                        &config,
+                        &args,
+                        prompt_variant,
+                    )
+                });
+                let elapsed_ms = started.elapsed().as_millis();
+                if !args.keep_loaded {
+                    stop_ollama_model_silent(&config.ollama_command, model);
+                }
+
+                let result = match result {
+                    Ok(output) => FormatCompareResult {
+                        name: run_name,
+                        prompt_name: prompt_variant.name.clone(),
+                        transcript_name: transcript_case.name.clone(),
+                        elapsed_ms,
+                        metrics,
+                        output: Some(output),
+                        error: None,
+                    },
+                    Err(error) => FormatCompareResult {
+                        name: run_name,
+                        prompt_name: prompt_variant.name.clone(),
+                        transcript_name: transcript_case.name.clone(),
+                        elapsed_ms,
+                        metrics,
+                        output: None,
+                        error: Some(error.to_string()),
+                    },
+                };
+                emit_compare_progress(
+                    &args,
+                    serde_json::json!({
+                        "type": "target_finished",
+                        "index": target_index,
+                        "total": total_targets,
+                        "name": result.name.as_str(),
+                        "ok": result.error.is_none(),
+                        "elapsed_ms": result.elapsed_ms,
+                        "total_elapsed_ms": compare_started.elapsed().as_millis(),
+                        "metrics": metrics_json(&result.metrics),
+                        "error": result.error.as_deref(),
+                    }),
+                );
+                results.push(result);
+            }
         }
 
-        let result = match result {
-            Ok(output) => FormatCompareResult {
-                name: model,
-                elapsed_ms,
-                metrics,
-                output: Some(output),
-                error: None,
-            },
-            Err(error) => FormatCompareResult {
-                name: model,
-                elapsed_ms,
-                metrics,
-                output: None,
-                error: Some(error.to_string()),
-            },
-        };
-        emit_compare_progress(
-            &args,
-            serde_json::json!({
-                "type": "target_finished",
-                "index": target_index,
-                "total": total_targets,
-                "name": result.name.as_str(),
-                "ok": result.error.is_none(),
-                "elapsed_ms": result.elapsed_ms,
-                "total_elapsed_ms": compare_started.elapsed().as_millis(),
-                "metrics": metrics_json(&result.metrics),
-                "error": result.error.as_deref(),
-            }),
-        );
-        results.push(result);
-    }
+        for (name, options) in &codex_runs {
+            for prompt_variant in &prompt_variants {
+                target_index += 1;
+                let run_name = format_compare_run_name(
+                    name,
+                    prompt_variant,
+                    prompt_variant_count,
+                    transcript_case,
+                    transcript_count,
+                );
+                emit_compare_progress(
+                    &args,
+                    serde_json::json!({
+                        "type": "target_started",
+                        "index": target_index,
+                        "total": total_targets,
+                        "name": run_name.as_str(),
+                        "model": name.as_str(),
+                        "prompt": prompt_variant.name.as_str(),
+                        "transcript": transcript_case.name.as_str(),
+                        "elapsed_ms": compare_started.elapsed().as_millis(),
+                    }),
+                );
+                let formatter = CodexFormatter::new(options.clone());
+                let started = Instant::now();
+                let (result, metrics) = run_with_resource_sampling(|| {
+                    format_with_codex_prompt_variant(
+                        &formatter,
+                        &transcript,
+                        &preformatted,
+                        &config,
+                        &args,
+                        prompt_variant,
+                    )
+                });
+                let elapsed_ms = started.elapsed().as_millis();
 
-    for (name, options) in codex_runs {
-        target_index += 1;
-        emit_compare_progress(
-            &args,
-            serde_json::json!({
-                "type": "target_started",
-                "index": target_index,
-                "total": total_targets,
-                "name": name.as_str(),
-                "elapsed_ms": compare_started.elapsed().as_millis(),
-            }),
-        );
-        let formatter = CodexFormatter::new(options);
-        let started = Instant::now();
-        let (result, metrics) = run_with_resource_sampling(|| {
-            formatter.format_with_prompt_input_and_note(
-                &transcript,
-                &preformatted,
-                args.mode,
-                args.prompt_input.as_codex_input(),
-                args.prompt_note.as_deref(),
-            )
-        });
-        let elapsed_ms = started.elapsed().as_millis();
-
-        let result = match result {
-            Ok(output) => FormatCompareResult {
-                name,
-                elapsed_ms,
-                metrics,
-                output: Some(output),
-                error: None,
-            },
-            Err(error) => FormatCompareResult {
-                name,
-                elapsed_ms,
-                metrics,
-                output: None,
-                error: Some(error.to_string()),
-            },
-        };
-        emit_compare_progress(
-            &args,
-            serde_json::json!({
-                "type": "target_finished",
-                "index": target_index,
-                "total": total_targets,
-                "name": result.name.as_str(),
-                "ok": result.error.is_none(),
-                "elapsed_ms": result.elapsed_ms,
-                "total_elapsed_ms": compare_started.elapsed().as_millis(),
-                "metrics": metrics_json(&result.metrics),
-                "error": result.error.as_deref(),
-            }),
-        );
-        results.push(result);
+                let result = match result {
+                    Ok(output) => FormatCompareResult {
+                        name: run_name,
+                        prompt_name: prompt_variant.name.clone(),
+                        transcript_name: transcript_case.name.clone(),
+                        elapsed_ms,
+                        metrics,
+                        output: Some(output),
+                        error: None,
+                    },
+                    Err(error) => FormatCompareResult {
+                        name: run_name,
+                        prompt_name: prompt_variant.name.clone(),
+                        transcript_name: transcript_case.name.clone(),
+                        elapsed_ms,
+                        metrics,
+                        output: None,
+                        error: Some(error.to_string()),
+                    },
+                };
+                emit_compare_progress(
+                    &args,
+                    serde_json::json!({
+                        "type": "target_finished",
+                        "index": target_index,
+                        "total": total_targets,
+                        "name": result.name.as_str(),
+                        "ok": result.error.is_none(),
+                        "elapsed_ms": result.elapsed_ms,
+                        "total_elapsed_ms": compare_started.elapsed().as_millis(),
+                        "metrics": metrics_json(&result.metrics),
+                        "error": result.error.as_deref(),
+                    }),
+                );
+                results.push(result);
+            }
+        }
     }
 
     let total_elapsed_ms = compare_started.elapsed().as_millis();
     let tested_models = tested_model_count(&results);
-    let report_path = args.report_dir.as_ref().map(|directory| {
-        write_format_compare_report(
+    let report_paths = args.report_dir.as_ref().map(|directory| {
+        write_format_compare_reports(
             directory,
             &hardware,
             args.mode,
             args.prompt_input,
             args.prompt_note.as_deref(),
             total_elapsed_ms,
-            &transcript.text,
-            &preformatted,
+            &prompt_variants,
+            &transcript_cases,
             &results,
         )
     });
@@ -2284,7 +2349,8 @@ fn format_compare(args: Vec<String>) {
             "total": total_targets,
             "tested_models": tested_models,
             "elapsed_ms": total_elapsed_ms,
-            "report_path": report_path.as_ref().and_then(|result| result.as_ref().ok().map(|path| path.display().to_string())),
+            "report_paths": report_paths.as_ref().and_then(|result| result.as_ref().ok().map(|paths| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>())),
+            "report_path": report_paths.as_ref().and_then(|result| result.as_ref().ok().and_then(|paths| paths.first().map(|path| path.display().to_string()))),
         }),
     );
 
@@ -2293,16 +2359,18 @@ fn format_compare(args: Vec<String>) {
             "mode": format!("{:?}", args.mode),
             "prompt_input": args.prompt_input.label(),
             "prompt_note": args.prompt_note.as_deref(),
+            "custom_prompts": args.custom_prompts.iter().map(|prompt| prompt.name.as_str()).collect::<Vec<_>>(),
+            "transcripts": transcript_cases.iter().map(|case| serde_json::json!({"name": case.name.as_str(), "text": case.text.as_str()})).collect::<Vec<_>>(),
             "tested_models": tested_models,
             "total_elapsed_ms": total_elapsed_ms,
             "preprocessed_sent_to_model": args.prompt_input == ComparePromptInput::RawAndPreprocessed,
-            "preprocessed": preformatted,
             "hardware": hardware_json(&hardware),
-            "report_path": report_path.as_ref().map(|result| result.as_ref().ok().map(|path| path.display().to_string())),
+            "report_paths": report_paths.as_ref().map(|result| result.as_ref().ok().map(|paths| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>())),
+            "report_path": report_paths.as_ref().map(|result| result.as_ref().ok().and_then(|paths| paths.first().map(|path| path.display().to_string()))),
             "results": results.iter().map(format_compare_result_json).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
-        if let Some(Err(error)) = report_path {
+        if let Some(Err(error)) = report_paths {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -2312,20 +2380,32 @@ fn format_compare(args: Vec<String>) {
     println!("mode: {:?}", args.mode);
     println!("prompt_input: {}", args.prompt_input.label());
     println!(
+        "transcripts: {}",
+        transcript_cases
+            .iter()
+            .map(|case| case.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
         "summary: {}",
         format_tested_summary(tested_models, total_elapsed_ms)
     );
     if let Some(prompt_note) = args.prompt_note.as_deref() {
         println!("prompt_note: {prompt_note}");
     }
+    if !args.custom_prompts.is_empty() {
+        println!(
+            "custom_prompts: {}",
+            args.custom_prompts
+                .iter()
+                .map(|prompt| prompt.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!("hardware:");
     print_hardware_snapshot(&hardware);
-    if args.prompt_input == ComparePromptInput::RawAndPreprocessed {
-        println!("preprocessed:");
-    } else {
-        println!("preprocessed (not sent to model):");
-    }
-    println!("{}", preformatted);
 
     for result in results {
         println!();
@@ -2342,9 +2422,13 @@ fn format_compare(args: Vec<String>) {
         }
     }
 
-    if let Some(report_result) = report_path {
+    if let Some(report_result) = report_paths {
         match report_result {
-            Ok(path) => println!("\nreport: {}", path.display()),
+            Ok(paths) => {
+                for path in paths {
+                    println!("\nreport: {}", path.display());
+                }
+            }
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(1);
@@ -2365,6 +2449,9 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut keep_loaded = false;
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
     let mut prompt_note = None;
+    let mut custom_prompts = Vec::new();
+    let mut include_default_prompt = false;
+    let mut transcripts = Vec::new();
     let mut report_dir = None;
     let mut progress_json = false;
     let mut json = false;
@@ -2483,6 +2570,55 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             } else {
                 index += 1;
             }
+        } else if let Some(value) = arg.strip_prefix("--custom-prompt=") {
+            custom_prompts.push(parse_named_prompt_template(value, custom_prompts.len() + 1));
+            index += 1;
+        } else if arg == "--custom-prompt" || arg == "--model-prompt" {
+            if let Some(value) = args.get(index + 1) {
+                custom_prompts.push(parse_named_prompt_template(value, custom_prompts.len() + 1));
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--custom-prompt-file=") {
+            custom_prompts.push(read_named_prompt_template_file(
+                value,
+                custom_prompts.len() + 1,
+            ));
+            index += 1;
+        } else if arg == "--custom-prompt-file" || arg == "--model-prompt-file" {
+            if let Some(value) = args.get(index + 1) {
+                custom_prompts.push(read_named_prompt_template_file(
+                    value,
+                    custom_prompts.len() + 1,
+                ));
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--include-default-prompt" || arg == "--with-default-prompt" {
+            include_default_prompt = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--transcript=") {
+            transcripts.push(parse_named_transcript(value, transcripts.len() + 1));
+            index += 1;
+        } else if arg == "--transcript" || arg == "--case" {
+            if let Some(value) = args.get(index + 1) {
+                transcripts.push(parse_named_transcript(value, transcripts.len() + 1));
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--transcript-file=") {
+            transcripts.push(read_named_transcript_file(value, transcripts.len() + 1));
+            index += 1;
+        } else if arg == "--transcript-file" || arg == "--case-file" {
+            if let Some(value) = args.get(index + 1) {
+                transcripts.push(read_named_transcript_file(value, transcripts.len() + 1));
+                index += 2;
+            } else {
+                index += 1;
+            }
         } else if let Some(value) = arg.strip_prefix("--report-dir=") {
             report_dir = Some(expand_user_path(value));
             index += 1;
@@ -2517,6 +2653,9 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         keep_loaded,
         prompt_input,
         prompt_note,
+        custom_prompts,
+        include_default_prompt,
+        transcripts,
         report_dir,
         progress_json,
         json,
@@ -2542,6 +2681,108 @@ fn read_prompt_note_file(path: &str) -> String {
     })
 }
 
+fn parse_named_prompt_template(value: &str, index: usize) -> NamedPromptTemplate {
+    let (name, template) = value
+        .split_once('=')
+        .map(|(name, template)| (name.to_string(), template.to_string()))
+        .unwrap_or_else(|| (format!("prompt-{index}"), value.to_string()));
+    let name = name.trim();
+    let template = template.trim();
+
+    if template.is_empty() {
+        eprintln!("custom prompt `{name}` cannot be empty");
+        std::process::exit(1);
+    }
+
+    NamedPromptTemplate {
+        name: if name.is_empty() {
+            format!("prompt-{index}")
+        } else {
+            name.to_string()
+        },
+        template: template.to_string(),
+    }
+}
+
+fn read_named_prompt_template_file(value: &str, index: usize) -> NamedPromptTemplate {
+    let (name, path) = value
+        .split_once('=')
+        .map(|(name, path)| (name.to_string(), path.to_string()))
+        .unwrap_or_else(|| (format!("prompt-{index}"), value.to_string()));
+    let path = expand_user_path(path.trim());
+    let template = fs::read_to_string(&path).unwrap_or_else(|source| {
+        eprintln!(
+            "failed to read custom prompt file {}: {source}",
+            path.display()
+        );
+        std::process::exit(1);
+    });
+
+    parse_named_prompt_template(
+        &format!(
+            "{}={}",
+            if name.trim().is_empty() {
+                format!("prompt-{index}")
+            } else {
+                name.trim().to_string()
+            },
+            template
+        ),
+        index,
+    )
+}
+
+fn parse_named_transcript(value: &str, index: usize) -> NamedTranscript {
+    let (name, text) = value
+        .split_once('=')
+        .map(|(name, text)| (name.to_string(), text.to_string()))
+        .unwrap_or_else(|| (format!("transcript-{index}"), value.to_string()));
+    let name = name.trim();
+    let text = text.trim();
+
+    if text.is_empty() {
+        eprintln!("transcript `{name}` cannot be empty");
+        std::process::exit(1);
+    }
+
+    NamedTranscript {
+        name: if name.is_empty() {
+            format!("transcript-{index}")
+        } else {
+            name.to_string()
+        },
+        text: text.to_string(),
+    }
+}
+
+fn read_named_transcript_file(value: &str, index: usize) -> NamedTranscript {
+    let (name, path) = value
+        .split_once('=')
+        .map(|(name, path)| (name.to_string(), path.to_string()))
+        .unwrap_or_else(|| (format!("transcript-{index}"), value.to_string()));
+    let path = expand_user_path(path.trim());
+    let text = fs::read_to_string(&path).unwrap_or_else(|source| {
+        eprintln!(
+            "failed to read transcript file {}: {source}",
+            path.display()
+        );
+        std::process::exit(1);
+    });
+
+    parse_named_transcript(
+        &format!(
+            "{}={}",
+            if name.trim().is_empty() {
+                format!("transcript-{index}")
+            } else {
+                name.trim().to_string()
+            },
+            text
+        ),
+        index,
+    )
+}
+
 fn emit_compare_progress(args: &FormatCompareArgs, value: serde_json::Value) {
     if args.progress_json {
         eprintln!("{}", serde_json::to_string(&value).unwrap());
@@ -2555,6 +2796,204 @@ fn push_model_values(models: &mut Vec<String>, value: &str) {
             models.push(model.to_string());
         }
     }
+}
+
+fn resolve_compare_transcripts(args: &FormatCompareArgs) -> Vec<NamedTranscript> {
+    let mut transcripts = Vec::new();
+
+    if !args.text.trim().is_empty() {
+        transcripts.push(NamedTranscript {
+            name: "transcript-1".to_string(),
+            text: args.text.trim().to_string(),
+        });
+    }
+
+    transcripts.extend(args.transcripts.iter().cloned());
+
+    transcripts
+}
+
+fn resolve_compare_prompt_variants(args: &FormatCompareArgs) -> Vec<ComparePromptVariant> {
+    let mut variants = Vec::new();
+
+    if args.custom_prompts.is_empty() || args.include_default_prompt {
+        variants.push(ComparePromptVariant::built_in());
+    }
+
+    variants.extend(
+        args.custom_prompts
+            .iter()
+            .map(|prompt| ComparePromptVariant {
+                name: prompt.name.clone(),
+                template: Some(prompt.template.clone()),
+            }),
+    );
+
+    variants
+}
+
+fn format_compare_run_name(
+    model_name: &str,
+    prompt_variant: &ComparePromptVariant,
+    prompt_variant_count: usize,
+    transcript: &NamedTranscript,
+    transcript_count: usize,
+) -> String {
+    let mut name = model_name.to_string();
+
+    if prompt_variant_count > 1 || prompt_variant.is_custom() {
+        name.push_str(" / ");
+        name.push_str(&prompt_variant.name);
+    }
+
+    if transcript_count > 1 {
+        name.push_str(" / ");
+        name.push_str(&transcript.name);
+    }
+
+    name
+}
+
+fn format_with_ollama_prompt_variant(
+    formatter: &OllamaFormatter,
+    transcript: &chirper_core::Transcript,
+    preformatted: &str,
+    config: &ChirperConfig,
+    args: &FormatCompareArgs,
+    prompt_variant: &ComparePromptVariant,
+) -> ChirperResult<String> {
+    if let Some(template) = prompt_variant.template.as_deref() {
+        let prompt = render_custom_prompt(
+            template,
+            &transcript.text,
+            preformatted,
+            args.mode,
+            args.prompt_input,
+            &config.vocabulary,
+            args.prompt_note.as_deref(),
+        );
+        return formatter.format_custom_prompt(
+            &prompt,
+            compare_non_empty_input(transcript, preformatted, args.prompt_input),
+        );
+    }
+
+    formatter.format_with_prompt_input_and_note(
+        transcript,
+        preformatted,
+        args.mode,
+        args.prompt_input.as_ollama_input(),
+        args.prompt_note.as_deref(),
+    )
+}
+
+fn format_with_codex_prompt_variant(
+    formatter: &CodexFormatter,
+    transcript: &chirper_core::Transcript,
+    preformatted: &str,
+    config: &ChirperConfig,
+    args: &FormatCompareArgs,
+    prompt_variant: &ComparePromptVariant,
+) -> ChirperResult<String> {
+    if let Some(template) = prompt_variant.template.as_deref() {
+        let prompt = render_custom_prompt(
+            template,
+            &transcript.text,
+            preformatted,
+            args.mode,
+            args.prompt_input,
+            &config.vocabulary,
+            args.prompt_note.as_deref(),
+        );
+        return formatter.format_custom_prompt(
+            &prompt,
+            compare_non_empty_input(transcript, preformatted, args.prompt_input),
+        );
+    }
+
+    formatter.format_with_prompt_input_and_note(
+        transcript,
+        preformatted,
+        args.mode,
+        args.prompt_input.as_codex_input(),
+        args.prompt_note.as_deref(),
+    )
+}
+
+fn compare_non_empty_input<'a>(
+    transcript: &'a chirper_core::Transcript,
+    preformatted: &'a str,
+    prompt_input: ComparePromptInput,
+) -> &'a str {
+    match prompt_input {
+        ComparePromptInput::RawOnly => &transcript.text,
+        ComparePromptInput::RawAndPreprocessed => preformatted,
+    }
+}
+
+fn render_custom_prompt(
+    template: &str,
+    raw_text: &str,
+    preprocessed_text: &str,
+    mode: DictationMode,
+    prompt_input: ComparePromptInput,
+    vocabulary: &[chirper_core::VocabularyEntry],
+    prompt_note: Option<&str>,
+) -> String {
+    let preprocessed_for_prompt = match prompt_input {
+        ComparePromptInput::RawOnly => "",
+        ComparePromptInput::RawAndPreprocessed => preprocessed_text,
+    };
+    let vocabulary_text = if vocabulary.is_empty() {
+        String::new()
+    } else {
+        vocabulary
+            .iter()
+            .map(|entry| format!("{} => {}", entry.spoken, entry.written))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut prompt = template.trim().to_string();
+    let had_placeholder = [
+        "{transcript}",
+        "{raw_transcript}",
+        "{preprocessed}",
+        "{preprocessed_draft}",
+        "{mode}",
+        "{vocabulary}",
+    ]
+    .iter()
+    .any(|placeholder| prompt.contains(placeholder));
+
+    prompt = prompt
+        .replace("{transcript}", raw_text)
+        .replace("{raw_transcript}", raw_text)
+        .replace("{preprocessed}", preprocessed_for_prompt)
+        .replace("{preprocessed_draft}", preprocessed_for_prompt)
+        .replace("{mode}", &format!("{mode:?}"))
+        .replace("{vocabulary}", &vocabulary_text);
+
+    if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
+        prompt.push_str("\n\nAdditional compare-run instructions:\n");
+        prompt.push_str(prompt_note);
+    }
+
+    if had_placeholder {
+        return prompt;
+    }
+
+    prompt.push_str("\n\nRaw transcript:\n<<<\n");
+    prompt.push_str(raw_text);
+    prompt.push_str("\n>>>\n");
+
+    if prompt_input == ComparePromptInput::RawAndPreprocessed {
+        prompt.push_str("\nPreprocessed draft:\n<<<\n");
+        prompt.push_str(preprocessed_text);
+        prompt.push_str("\n>>>\n");
+    }
+
+    prompt
 }
 
 fn resolve_codex_compare_runs(
@@ -2602,6 +3041,8 @@ fn resolve_codex_compare_runs(
 #[derive(Debug, Clone, PartialEq)]
 struct FormatCompareResult {
     name: String,
+    prompt_name: String,
+    transcript_name: String,
     elapsed_ms: u128,
     metrics: ResourceMetrics,
     output: Option<String>,
@@ -2611,6 +3052,8 @@ struct FormatCompareResult {
 fn format_compare_result_json(result: &FormatCompareResult) -> serde_json::Value {
     serde_json::json!({
         "name": result.name,
+        "prompt_name": result.prompt_name,
+        "transcript_name": result.transcript_name,
         "elapsed_ms": result.elapsed_ms,
         "metrics": metrics_json(&result.metrics),
         "ok": result.error.is_none(),
@@ -2628,9 +3071,9 @@ fn tested_model_count(results: &[FormatCompareResult]) -> usize {
 
 fn format_tested_summary(tested_models: usize, elapsed_ms: u128) -> String {
     let noun = if tested_models == 1 {
-        "Model"
+        "Model Run"
     } else {
-        "Models"
+        "Model Runs"
     };
     format!(
         "Tested {tested_models} {noun} in {}",
@@ -3084,79 +3527,128 @@ fn hardware_json(hardware: &HardwareSnapshot) -> serde_json::Value {
     })
 }
 
-fn write_format_compare_report(
+fn write_format_compare_reports(
     directory: &Path,
     hardware: &HardwareSnapshot,
     mode: DictationMode,
     prompt_input: ComparePromptInput,
     prompt_note: Option<&str>,
     total_elapsed_ms: u128,
-    raw_transcript: &str,
-    preprocessed: &str,
+    prompt_variants: &[ComparePromptVariant],
+    transcripts: &[NamedTranscript],
     results: &[FormatCompareResult],
-) -> Result<PathBuf, String> {
+) -> Result<Vec<PathBuf>, String> {
     fs::create_dir_all(directory).map_err(|source| {
         format!(
             "failed to create report directory {}: {source}",
             directory.display()
         )
     })?;
-
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
-    let path = directory.join(format!("chirper-format-compare-{timestamp}.txt"));
-    let mut report = String::new();
 
-    let _ = writeln!(report, "Chirper format comparison");
-    let _ = writeln!(report, "generated_unix_seconds: {timestamp}");
-    let _ = writeln!(
-        report,
-        "{}",
-        format_tested_summary(tested_model_count(results), total_elapsed_ms)
-    );
-    let _ = writeln!(report, "total_elapsed_ms: {total_elapsed_ms}");
-    let _ = writeln!(report, "mode: {mode:?}");
-    let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
-    if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
-        let _ = writeln!(report, "prompt_note:");
-        let _ = writeln!(report, "{prompt_note}");
-    }
-    let _ = writeln!(report);
-    let _ = writeln!(report, "Hardware:");
-    write_hardware_snapshot(&mut report, hardware);
-    let _ = writeln!(report);
-    let _ = writeln!(report, "Raw transcript:");
-    let _ = writeln!(report, "{raw_transcript}");
-    let _ = writeln!(report);
-    if prompt_input == ComparePromptInput::RawAndPreprocessed {
-        let _ = writeln!(report, "Preprocessed draft (sent to model):");
-    } else {
-        let _ = writeln!(report, "Preprocessed draft (not sent to model):");
-    }
-    let _ = writeln!(report, "{preprocessed}");
+    let mut paths = Vec::new();
 
-    for result in results {
-        let _ = writeln!(report);
+    for (prompt_index, prompt_variant) in prompt_variants.iter().enumerate() {
+        let prompt_results = results
+            .iter()
+            .filter(|result| result.prompt_name == prompt_variant.name)
+            .collect::<Vec<_>>();
+        if prompt_results.is_empty() {
+            continue;
+        }
+
+        let file_name = format!(
+            "chirper-format-compare-{timestamp}-{:02}-{}.txt",
+            prompt_index + 1,
+            slugify_report_part(&prompt_variant.name)
+        );
+        let path = directory.join(file_name);
+        let mut report = String::new();
+        let prompt_elapsed_ms = prompt_results
+            .iter()
+            .map(|result| result.elapsed_ms)
+            .sum::<u128>();
+
+        let _ = writeln!(report, "Chirper format comparison");
+        let _ = writeln!(report, "generated_unix_seconds: {timestamp}");
+        let _ = writeln!(report, "prompt: {}", prompt_variant.name);
         let _ = writeln!(
             report,
-            "=== {} ({}, {}) ===",
-            result.name,
-            format_elapsed(result.elapsed_ms),
-            format_metrics_summary(&result.metrics)
+            "{}",
+            format_tested_summary(prompt_results.len(), prompt_elapsed_ms)
         );
-        if let Some(output) = &result.output {
-            let _ = writeln!(report, "{output}");
-        } else if let Some(error) = &result.error {
-            let _ = writeln!(report, "ERROR: {error}");
+        let _ = writeln!(report, "prompt_elapsed_ms: {prompt_elapsed_ms}");
+        let _ = writeln!(report, "full_run_elapsed_ms: {total_elapsed_ms}");
+        let _ = writeln!(report, "mode: {mode:?}");
+        let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
+        if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
+            let _ = writeln!(report, "prompt_note:");
+            let _ = writeln!(report, "{prompt_note}");
         }
+        if let Some(template) = prompt_variant.template.as_deref() {
+            let _ = writeln!(report);
+            let _ = writeln!(report, "Custom prompt template:");
+            let _ = writeln!(report, "{template}");
+        }
+        let _ = writeln!(report);
+        let _ = writeln!(report, "Hardware:");
+        write_hardware_snapshot(&mut report, hardware);
+        let _ = writeln!(report);
+        let _ = writeln!(report, "Transcripts:");
+        for transcript in transcripts {
+            let _ = writeln!(report);
+            let _ = writeln!(report, "--- {} ---", transcript.name);
+            let _ = writeln!(report, "{}", transcript.text);
+        }
+
+        for result in prompt_results {
+            let _ = writeln!(report);
+            let _ = writeln!(
+                report,
+                "=== {} ({}, {}) ===",
+                result.name,
+                format_elapsed(result.elapsed_ms),
+                format_metrics_summary(&result.metrics)
+            );
+            if let Some(output) = &result.output {
+                let _ = writeln!(report, "{output}");
+            } else if let Some(error) = &result.error {
+                let _ = writeln!(report, "ERROR: {error}");
+            }
+        }
+
+        fs::write(&path, report)
+            .map_err(|source| format!("failed to write report {}: {source}", path.display()))?;
+        paths.push(path);
     }
 
-    fs::write(&path, report)
-        .map_err(|source| format!("failed to write report {}: {source}", path.display()))?;
+    Ok(paths)
+}
 
-    Ok(path)
+fn slugify_report_part(value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if slug.is_empty() {
+        "prompt".to_string()
+    } else {
+        slug
+    }
 }
 
 fn print_hardware_snapshot(hardware: &HardwareSnapshot) {

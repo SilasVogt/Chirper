@@ -87,6 +87,21 @@ impl OllamaFormatter {
             &self.options.vocabulary,
             prompt_note,
         );
+        let input_text = match input {
+            OllamaPromptInput::RawOnly => &raw_transcript.text,
+            OllamaPromptInput::RawAndPreprocessed => preprocessed_text,
+        };
+
+        self.format_custom_prompt(&prompt, input_text)
+    }
+
+    pub fn format_custom_prompt(
+        &self,
+        prompt: &str,
+        non_empty_input: &str,
+    ) -> ChirperResult<String> {
+        self.ensure_model_installed()?;
+
         let output = Command::new(&self.options.command)
             .arg("run")
             .arg("--nowordwrap")
@@ -112,11 +127,7 @@ impl OllamaFormatter {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let formatted = clean_model_output(&stdout);
-        let input_text = match input {
-            OllamaPromptInput::RawOnly => &raw_transcript.text,
-            OllamaPromptInput::RawAndPreprocessed => preprocessed_text,
-        };
-        if formatted.is_empty() && !input_text.trim().is_empty() {
+        if formatted.is_empty() && !non_empty_input.trim().is_empty() {
             return Err(ChirperError::Formatting(
                 "ollama returned an empty formatter response".to_string(),
             ));
