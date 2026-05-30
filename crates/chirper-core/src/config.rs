@@ -250,11 +250,64 @@ impl ChirperConfig {
         })
     }
 
+    pub fn save_audio_target(path: impl AsRef<Path>, target: Option<&str>) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = if path.exists() {
+            let content = fs::read_to_string(path).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to read config file {}: {source}",
+                    path.display()
+                ))
+            })?;
+
+            content.parse::<toml::Table>().map_err(|source| {
+                ChirperError::Configuration(format!("failed to parse config TOML: {source}"))
+            })?
+        } else {
+            toml::Table::new()
+        };
+
+        match target {
+            Some(target) if !target.trim().is_empty() => {
+                table.insert(
+                    "pipewire_target".to_string(),
+                    toml::Value::String(target.to_string()),
+                );
+            }
+            _ => {
+                table.remove("pipewire_target");
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to create config directory {}: {source}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let content = toml::to_string_pretty(&table).map_err(|source| {
+            ChirperError::Configuration(format!("failed to encode config TOML: {source}"))
+        })?;
+        fs::write(path, content).map_err(|source| {
+            ChirperError::Configuration(format!(
+                "failed to write config file {}: {source}",
+                path.display()
+            ))
+        })
+    }
+
     pub fn save_default_model_selection(
         model: &str,
         model_path: impl AsRef<Path>,
     ) -> ChirperResult<()> {
         Self::save_model_selection(Self::default_path(), model, model_path)
+    }
+
+    pub fn save_default_audio_target(target: Option<&str>) -> ChirperResult<()> {
+        Self::save_audio_target(Self::default_path(), target)
     }
 }
 
@@ -510,6 +563,40 @@ mod tests {
             config.whispercpp_model_path,
             Some(PathBuf::from("/models/ggml-small.bin"))
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_audio_target_updates_only_audio_field() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "audio"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_audio_target(&path, Some("alsa_input.example")).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(
+            config.pipewire_target,
+            Some("alsa_input.example".to_string())
+        );
+
+        ChirperConfig::save_audio_target(&path, None).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.pipewire_target, None);
 
         let _ = fs::remove_file(path);
     }

@@ -67,9 +67,14 @@ The extension menu has one primary action. It reads `Start Recording` while idle
 and changes to `Stop Recording` while recording. The configured shortcut is shown
 on the right side of that action.
 
+The `Input` submenu changes the saved microphone input and includes one-shot
+screen-audio actions for output devices. One-shot screen audio is sent only with
+that start request; it does not replace the saved microphone input.
+
 The panel icon uses separate idle, recording, processing, and disconnected
 states. The overlay is shown while recording or processing and uses a subtle
-pulse animation.
+pulse animation. While recording or processing, the overlay includes the selected
+input or screen-audio label when the daemon reports one.
 
 The panel menu keeps quick controls at the top level: paste behavior, Whisper
 model selection/downloads, an Ollama placeholder, status refresh, daemon restart,
@@ -94,9 +99,13 @@ already completed.
 ## Audio Source
 
 PipeWire routing can choose the wrong capture target on complex audio setups.
-Chirper marks its `pw-record` stream as `Capture`, but users can also set
-`pipewire_target` in `~/.config/chirper/config.toml` to a `wpctl status` source
-id or PipeWire node name.
+Chirper marks its `pw-record` stream as `Capture`, and users can choose a saved
+input from the panel menu, settings window, or `chirper audio-use`. The saved
+value is stored as `pipewire_target` in `~/.config/chirper/config.toml`.
+
+The screen-audio entries in the panel menu target PipeWire output nodes for a
+single recording. They are intended for transcription or note-taking from a
+video without leaving Chirper in desktop-audio mode afterward.
 
 ## Shortcut
 
@@ -127,6 +136,7 @@ The extension may:
 - call `toggle`, `start_recording`, and `stop_recording`
 - show a shell-native recording overlay
 - restore the previous window and send paste after the daemon copies text
+- choose an audio input or pass a one-shot screen-audio target
 - open the config folder
 
 The extension should not:

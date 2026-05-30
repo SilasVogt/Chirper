@@ -41,6 +41,23 @@ Supported commands:
 | `stop_recording` | Stop recording, transcribe, format, and insert. |
 | `shutdown` | Ask the daemon to exit. Intended for development. |
 
+`toggle` and `start_recording` may include a one-shot audio target override:
+
+```json
+{
+  "command": "start_recording",
+  "audio": {
+    "kind": "screen_audio",
+    "target": "alsa_output.example",
+    "label": "Screen audio: Speakers"
+  }
+}
+```
+
+`kind` is `input` or `screen_audio`. If omitted, the daemon uses
+`pipewire_target` from config, or the PipeWire default input when that config key
+is unset.
+
 ## Response
 
 Every command returns this shape:
@@ -50,6 +67,8 @@ Every command returns this shape:
   "ok": true,
   "state": "idle",
   "message": "transcript copied to clipboard",
+  "audio_target": "alsa_input.example",
+  "audio_label": "Example Microphone",
   "recording_path": "/run/user/1000/chirper/chirper-123.wav",
   "transcript": "comma open quote hello close quote",
   "formatted": ", \"hello\"",
@@ -64,6 +83,8 @@ Fields:
 | `ok` | Whether the command completed successfully. |
 | `state` | Final daemon state after the command response. |
 | `message` | Human-readable status or error text. |
+| `audio_target` | PipeWire node name used for the active or completed recording, when known. |
+| `audio_label` | Human-readable input/output label for UI overlays. |
 | `recording_path` | WAV path when a recording was started or processed. |
 | `transcript` | Raw ASR transcript when available. |
 | `formatted` | Final text after formatting when available. |
@@ -80,6 +101,7 @@ These commands exercise the daemon API:
 cargo run -p chirper-cli -- daemon-status
 cargo run -p chirper-cli -- daemon-toggle
 cargo run -p chirper-cli -- daemon-start
+cargo run -p chirper-cli -- daemon-start-screen
 cargo run -p chirper-cli -- daemon-stop
 cargo run -p chirper-cli -- daemon-shutdown
 ```

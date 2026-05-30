@@ -10,10 +10,30 @@ use std::{
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ApiRequest {
     Status,
-    Toggle,
-    StartRecording,
+    Toggle {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audio: Option<AudioCaptureTarget>,
+    },
+    StartRecording {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audio: Option<AudioCaptureTarget>,
+    },
     StopRecording,
     Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AudioCaptureTarget {
+    pub kind: AudioCaptureKind,
+    pub target: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCaptureKind {
+    Input,
+    ScreenAudio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -21,6 +41,8 @@ pub struct ApiResponse {
     pub ok: bool,
     pub state: String,
     pub message: String,
+    pub audio_target: Option<String>,
+    pub audio_label: Option<String>,
     pub recording_path: Option<String>,
     pub transcript: Option<String>,
     pub formatted: Option<String>,
@@ -33,6 +55,8 @@ impl ApiResponse {
             ok: true,
             state: state.into(),
             message: message.into(),
+            audio_target: None,
+            audio_label: None,
             recording_path: None,
             transcript: None,
             formatted: None,
@@ -45,6 +69,8 @@ impl ApiResponse {
             ok: false,
             state: state.into(),
             message: message.into(),
+            audio_target: None,
+            audio_label: None,
             recording_path: None,
             transcript: None,
             formatted: None,
@@ -94,9 +120,33 @@ mod tests {
 
     #[test]
     fn request_names_are_stable_snake_case() {
-        let value = serde_json::to_string(&ApiRequest::StartRecording).unwrap();
+        let value = serde_json::to_string(&ApiRequest::StartRecording { audio: None }).unwrap();
 
         assert_eq!(value, r#"{"command":"start_recording"}"#);
+    }
+
+    #[test]
+    fn start_recording_accepts_audio_override() {
+        let value = serde_json::json!({
+            "command": "start_recording",
+            "audio": {
+                "kind": "screen_audio",
+                "target": "alsa_output.example",
+                "label": "Example Output",
+            }
+        });
+        let request = serde_json::from_value::<ApiRequest>(value).unwrap();
+
+        assert_eq!(
+            request,
+            ApiRequest::StartRecording {
+                audio: Some(AudioCaptureTarget {
+                    kind: AudioCaptureKind::ScreenAudio,
+                    target: Some("alsa_output.example".to_string()),
+                    label: Some("Example Output".to_string()),
+                })
+            }
+        );
     }
 
     #[test]
@@ -106,6 +156,8 @@ mod tests {
         assert!(response.ok);
         assert_eq!(response.state, "idle");
         assert_eq!(response.message, "ready");
+        assert_eq!(response.audio_target, None);
+        assert_eq!(response.audio_label, None);
         assert_eq!(response.recording_path, None);
         assert_eq!(response.transcript, None);
         assert_eq!(response.formatted, None);

@@ -10,10 +10,11 @@ const app = new Adw.Application({
     application_id: 'dev.local.Chirper.Settings',
     flags: Gio.ApplicationFlags.FLAGS_NONE,
 });
+let window = null;
 
 app.connect('activate', application => {
     const settings = loadExtensionSettings(extensionPath);
-    const window = new Adw.PreferencesWindow({
+    window = new Adw.PreferencesWindow({
         application,
         title: 'Chirper Settings',
         default_width: 720,
@@ -24,4 +25,4 @@ app.connect('activate', application => {
     window.present();
 });
 
-app.run([]);
+app.run([GLib.get_prgname() ?? 'chirper-settings']);

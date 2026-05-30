@@ -26,6 +26,11 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("daemon-start-screen")) {
+        daemon_start_screen();
+        return;
+    }
+
     if matches!(first.as_deref(), Some("record-test")) {
         record_test(args.next().as_deref());
         return;
@@ -58,6 +63,21 @@ fn main() {
 
     if matches!(first.as_deref(), Some("model-download")) {
         model_download(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("audio-current")) {
+        audio_current();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("audio-list")) {
+        audio_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("audio-use")) {
+        audio_use(args.next());
         return;
     }
 
@@ -102,8 +122,8 @@ fn main() {
 fn parse_daemon_request(command: Option<&str>) -> Option<ApiRequest> {
     match command {
         Some("daemon-status") => Some(ApiRequest::Status),
-        Some("daemon-toggle") => Some(ApiRequest::Toggle),
-        Some("daemon-start") => Some(ApiRequest::StartRecording),
+        Some("daemon-toggle") => Some(ApiRequest::Toggle { audio: None }),
+        Some("daemon-start") => Some(ApiRequest::StartRecording { audio: None }),
         Some("daemon-stop") => Some(ApiRequest::StopRecording),
         Some("daemon-shutdown") => Some(ApiRequest::Shutdown),
         _ => None,
@@ -162,7 +182,8 @@ fn record_test(seconds: Option<&str>) {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(3);
 
-    let mut recorder = PipeWireRecorder::default();
+    let config = load_config_or_exit();
+    let mut recorder = PipeWireRecorder::new(PipeWireRecorderOptions::from_config(&config));
 
     println!("recording for {seconds}s...");
     if let Err(error) = recorder.start_recording() {
@@ -488,6 +509,284 @@ fn model_download(args: Vec<String>) {
     }
 }
 
+fn audio_current() {
+    let config = load_config_or_exit();
+    let nodes = pipewire_audio_nodes().unwrap_or_default();
+    let label = current_audio_label(&config, &nodes);
+    let target = config.pipewire_target.as_deref().unwrap_or("auto");
+
+    println!("target: {target}");
+    println!("label: {label}");
+}
+
+fn audio_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let nodes = match pipewire_audio_nodes() {
+        Ok(nodes) => nodes,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let current_label = current_audio_label(&config, &nodes);
+
+    if json {
+        let sources = nodes
+            .iter()
+            .filter(|node| node.kind == AudioNodeKind::Input)
+            .map(|node| audio_node_json(node, config.pipewire_target.as_deref()))
+            .collect::<Vec<_>>();
+        let sinks = nodes
+            .iter()
+            .filter(|node| node.kind == AudioNodeKind::Output)
+            .map(|node| audio_node_json(node, None))
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "current": {
+                "target": config.pipewire_target,
+                "label": current_label,
+            },
+            "sources": sources,
+            "sinks": sinks,
+        });
+
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("current:");
+    println!(
+        "  target: {}",
+        config.pipewire_target.as_deref().unwrap_or("auto")
+    );
+    println!("  label: {current_label}");
+    println!();
+    println!("microphone inputs:");
+    println!("  {:<8} {:<8} {:<42} Description", "id", "serial", "target");
+    println!(
+        "  {:<8} {:<8} {:<42} {}",
+        "-", "-", "auto", "Default microphone"
+    );
+
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == AudioNodeKind::Input)
+    {
+        println!(
+            "  {:<8} {:<8} {:<42} {}",
+            node.id, node.serial, node.name, node.description
+        );
+    }
+
+    println!();
+    println!("screen audio outputs:");
+    println!("  {:<8} {:<8} {:<42} Description", "id", "serial", "target");
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == AudioNodeKind::Output)
+    {
+        println!(
+            "  {:<8} {:<8} {:<42} {}",
+            node.id, node.serial, node.name, node.description
+        );
+    }
+}
+
+fn audio_use(selection: Option<String>) {
+    let Some(selection) = selection else {
+        eprintln!("usage: chirper audio-use <auto|source-id|source-name>");
+        std::process::exit(1);
+    };
+
+    if matches!(selection.as_str(), "auto" | "default" | "none") {
+        if let Err(error) = ChirperConfig::save_default_audio_target(None) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+
+        println!("selected audio input: Default microphone");
+        println!("target: auto");
+        return;
+    }
+
+    let nodes = match pipewire_audio_nodes() {
+        Ok(nodes) => nodes,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let Some(node) = nodes
+        .iter()
+        .filter(|node| node.kind == AudioNodeKind::Input)
+        .find(|node| node.matches_selection(&selection))
+    else {
+        eprintln!("audio input not found: {selection}");
+        eprintln!("run `chirper audio-list` to see available inputs");
+        std::process::exit(1);
+    };
+
+    if let Err(error) = ChirperConfig::save_default_audio_target(Some(&node.name)) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected audio input: {}", node.description);
+    println!("target: {}", node.name);
+}
+
+fn daemon_start_screen() {
+    let nodes = match pipewire_audio_nodes() {
+        Ok(nodes) => nodes,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let Some(node) = nodes.iter().find(|node| node.kind == AudioNodeKind::Output) else {
+        eprintln!("no screen audio outputs found");
+        std::process::exit(1);
+    };
+
+    call_daemon(ApiRequest::StartRecording {
+        audio: Some(chirper_api::AudioCaptureTarget {
+            kind: chirper_api::AudioCaptureKind::ScreenAudio,
+            target: Some(node.name.clone()),
+            label: Some(format!("Screen audio: {}", node.description)),
+        }),
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioNodeKind {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone)]
+struct PipeWireAudioNode {
+    id: u64,
+    serial: u64,
+    name: String,
+    description: String,
+    kind: AudioNodeKind,
+}
+
+impl PipeWireAudioNode {
+    fn matches_selection(&self, selection: &str) -> bool {
+        selection == self.name
+            || selection == self.description
+            || selection == self.id.to_string()
+            || selection == self.serial.to_string()
+    }
+}
+
+fn pipewire_audio_nodes() -> Result<Vec<PipeWireAudioNode>, String> {
+    let output = Command::new("pw-dump")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|source| format!("failed to run pw-dump: {source}"))?;
+
+    if !output.status.success() {
+        return Err(format!("pw-dump exited with status {}", output.status));
+    }
+
+    let value = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .map_err(|source| format!("failed to parse pw-dump JSON: {source}"))?;
+    let Some(items) = value.as_array() else {
+        return Err("pw-dump returned unexpected JSON".to_string());
+    };
+
+    let mut nodes = Vec::new();
+    for item in items {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("PipeWire:Interface:Node") {
+            continue;
+        }
+
+        let Some(props) = item
+            .get("info")
+            .and_then(|info| info.get("props"))
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        let media_class = props
+            .get("media.class")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let kind = match media_class {
+            "Audio/Source" => AudioNodeKind::Input,
+            "Audio/Sink" => AudioNodeKind::Output,
+            _ => continue,
+        };
+        let id = item
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let serial = props
+            .get("object.serial")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(id);
+        let name = props
+            .get("node.name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        if name.is_empty() {
+            continue;
+        }
+
+        let description = props
+            .get("node.description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&name)
+            .to_string();
+
+        nodes.push(PipeWireAudioNode {
+            id,
+            serial,
+            name,
+            description,
+            kind,
+        });
+    }
+
+    nodes.sort_by(|a, b| {
+        (a.kind == AudioNodeKind::Output)
+            .cmp(&(b.kind == AudioNodeKind::Output))
+            .then_with(|| a.description.cmp(&b.description))
+    });
+    Ok(nodes)
+}
+
+fn audio_node_json(node: &PipeWireAudioNode, selected_target: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id,
+        "serial": node.serial,
+        "target": node.name,
+        "name": node.name,
+        "description": node.description,
+        "label": node.description,
+        "selected": selected_target
+            .map(|target| node.matches_selection(target))
+            .unwrap_or(false),
+    })
+}
+
+fn current_audio_label(config: &ChirperConfig, nodes: &[PipeWireAudioNode]) -> String {
+    let Some(target) = config.pipewire_target.as_deref() else {
+        return "Default microphone".to_string();
+    };
+
+    nodes
+        .iter()
+        .find(|node| node.kind == AudioNodeKind::Input && node.matches_selection(target))
+        .map(|node| node.description.clone())
+        .unwrap_or_else(|| target.to_string())
+}
+
 #[derive(Debug, Clone)]
 struct InstalledModel {
     name: String,
@@ -614,7 +913,8 @@ fn dictate_test(seconds: Option<&str>) {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(3);
 
-    let mut recorder = PipeWireRecorder::default();
+    let config = load_config_or_exit();
+    let mut recorder = PipeWireRecorder::new(PipeWireRecorderOptions::from_config(&config));
     println!("recording for {seconds}s...");
     if let Err(error) = recorder.start_recording() {
         eprintln!("{error}");

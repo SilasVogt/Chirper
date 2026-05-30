@@ -32,11 +32,18 @@ inspect available sources with:
 
 ```sh
 wpctl status
+cargo run -p chirper-cli -- audio-list
 ```
 
-Then set `pipewire_target` in `~/.config/chirper/config.toml` to the source id
-or node name you want Chirper to record. The daemon reads this when recording
-starts.
+Then choose the source you want Chirper to record:
+
+```sh
+cargo run -p chirper-cli -- audio-use auto
+cargo run -p chirper-cli -- audio-use alsa_input.example
+```
+
+This writes `pipewire_target` in `~/.config/chirper/config.toml`. The daemon
+reads the selected input when recording starts.
 
 To smoke-test a whisper.cpp transcription once `whisper-cli` and a model are available:
 
@@ -84,6 +91,14 @@ cargo run -p chirper-cli -- daemon-toggle
 # speak
 cargo run -p chirper-cli -- daemon-toggle
 cargo run -p chirper-cli -- daemon-shutdown
+```
+
+To record desktop/video audio once without changing the saved microphone input:
+
+```sh
+cargo run -p chirper-cli -- daemon-start-screen
+# play audio
+cargo run -p chirper-cli -- daemon-stop
 ```
 
 To install and start the daemon as a user systemd service:

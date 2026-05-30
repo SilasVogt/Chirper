@@ -28,7 +28,7 @@ const POLL_SECONDS = 1;
 const STATUS_REQUEST_TIMEOUT_SECONDS = 2;
 const COMMAND_REQUEST_TIMEOUT_SECONDS = 15;
 const STOP_RECORDING_TIMEOUT_SECONDS = 30 * 60;
-const OVERLAY_WIDTH = 250;
+const OVERLAY_WIDTH = 360;
 const OVERLAY_HEIGHT = 82;
 const DAEMON_SERVICE = 'chirper-daemon.service';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
@@ -54,14 +54,15 @@ function daemonSocketPath() {
 async function sendDaemonRequest(
     command,
     cancellable = null,
-    timeoutSeconds = STATUS_REQUEST_TIMEOUT_SECONDS
+    timeoutSeconds = STATUS_REQUEST_TIMEOUT_SECONDS,
+    extra = {}
 ) {
     const client = new Gio.SocketClient({timeout: timeoutSeconds});
     const address = new Gio.UnixSocketAddress({path: daemonSocketPath()});
     const connection = await client.connect_async(address, cancellable);
 
     try {
-        const payload = `${JSON.stringify({command})}\n`;
+        const payload = `${JSON.stringify({command, ...extra})}\n`;
         const output = connection.get_output_stream();
         await output.write_bytes_async(
             new GLib.Bytes(payload),
@@ -147,6 +148,16 @@ function formatAccelerator(value) {
         .replace(/\bsuper\b/i, 'Super');
 }
 
+function shortLabel(value, maxLength = 34) {
+    if (!value)
+        return '';
+
+    if (value.length <= maxLength)
+        return value;
+
+    return `${value.slice(0, maxLength - 1)}…`;
+}
+
 export default class ChirperExtension extends Extension {
     enable() {
         this._enabled = true;
@@ -157,6 +168,8 @@ export default class ChirperExtension extends Extension {
         this._lastState = 'unknown';
         this._lastFocusedWindow = null;
         this._virtualKeyboard = null;
+        this._selectedAudioTarget = null;
+        this._activeAudioLabel = null;
 
         this._rememberFocusedWindow();
         this._focusWindowId = global.display.connect('notify::focus-window', () => {
@@ -230,8 +243,11 @@ export default class ChirperExtension extends Extension {
         this._primarySubLabel = null;
         this._shortcutLabel = null;
         this._pasteSwitch = null;
+        this._audioMenu = null;
         this._modelMenu = null;
         this._ollamaMenu = null;
+        this._selectedAudioTarget = null;
+        this._activeAudioLabel = null;
         this._runtime = null;
         this._settings = null;
     }
@@ -303,6 +319,14 @@ export default class ChirperExtension extends Extension {
 
         this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        this._audioMenu = new PopupMenu.PopupSubMenuMenuItem('Input');
+        this._indicator.menu.addMenuItem(this._audioMenu);
+        this._audioMenu.menu.addMenuItem(this._disabledItem('Loading audio inputs'));
+        this._audioMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._refreshAudioMenu();
+        });
+
         this._modelMenu = new PopupMenu.PopupSubMenuMenuItem('Whisper Model');
         this._indicator.menu.addMenuItem(this._modelMenu);
         this._modelMenu.menu.addMenuItem(this._disabledItem('Loading models'));
@@ -343,6 +367,7 @@ export default class ChirperExtension extends Extension {
 
         this._syncShortcutLabel();
         this._syncPrimaryAction();
+        this._refreshAudioMenu();
         this._refreshModelMenu();
     }
 
@@ -439,16 +464,18 @@ export default class ChirperExtension extends Extension {
         if (this._lastState === 'recording')
             await this._stopRecordingAndMaybePaste();
         else
-            await this._startRecording();
+            await this._startRecording(this._selectedAudioTarget);
     }
 
-    async _startRecording() {
+    async _startRecording(audioTarget = null) {
         this._setPrimarySensitive(false);
+        const extra = audioTarget ? {audio: audioTarget} : {};
 
         try {
             const response = await this._sendCommandWithAutoStart(
                 'start_recording',
-                COMMAND_REQUEST_TIMEOUT_SECONDS
+                COMMAND_REQUEST_TIMEOUT_SECONDS,
+                extra
             );
             this._applyResponse(response);
 
@@ -494,13 +521,17 @@ export default class ChirperExtension extends Extension {
         }
     }
 
-    async _sendCommandWithAutoStart(command, timeoutSeconds = COMMAND_REQUEST_TIMEOUT_SECONDS) {
+    async _sendCommandWithAutoStart(
+        command,
+        timeoutSeconds = COMMAND_REQUEST_TIMEOUT_SECONDS,
+        extra = {}
+    ) {
         try {
-            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds);
+            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds, extra);
         } catch (error) {
             await controlDaemonService('start', this._cancellable);
             await sleep(500);
-            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds);
+            return await sendDaemonRequest(command, this._cancellable, timeoutSeconds, extra);
         }
     }
 
@@ -512,6 +543,78 @@ export default class ChirperExtension extends Extension {
         } catch (error) {
             if (this._enabled && !this._cancellable?.is_cancelled())
                 Main.notify('Chirper', `Failed to ${action} daemon: ${error.message}`);
+        }
+    }
+
+    async _refreshAudioMenu() {
+        if (!this._audioMenu)
+            return;
+
+        this._audioMenu.menu.removeAll();
+
+        try {
+            const output = await this._runCli(['audio-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current ?? {};
+            const currentLabel = current.label ?? 'Default microphone';
+            const sources = data.sources ?? [];
+            const sinks = data.sinks ?? [];
+
+            this._selectedAudioTarget = current.target
+                ? {kind: 'input', target: current.target, label: currentLabel}
+                : null;
+            this._audioMenu.label.text = `Input: ${shortLabel(currentLabel, 24)}`;
+            this._audioMenu.menu.addMenuItem(this._disabledItem(`Current: ${currentLabel}`));
+            this._audioMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            const defaultLabel = current.target ? 'Default microphone' : '✓ Default microphone';
+            const defaultItem = new PopupMenu.PopupMenuItem(defaultLabel);
+            defaultItem.connect('activate', () => {
+                this._selectAudioInput('auto');
+            });
+            this._audioMenu.menu.addMenuItem(defaultItem);
+
+            for (const source of sources) {
+                const label = source.selected ? `✓ ${source.label}` : source.label;
+                const item = new PopupMenu.PopupMenuItem(label);
+                item.connect('activate', () => {
+                    this._selectAudioInput(source.target);
+                });
+                this._audioMenu.menu.addMenuItem(item);
+            }
+
+            this._audioMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._audioMenu.menu.addMenuItem(this._disabledItem('Screen Audio Once'));
+
+            if (sinks.length === 0) {
+                this._audioMenu.menu.addMenuItem(this._disabledItem('No outputs found'));
+            } else {
+                for (const sink of sinks) {
+                    const item = new PopupMenu.PopupMenuItem(`Record ${sink.label}`);
+                    item.connect('activate', () => {
+                        this._startRecording({
+                            kind: 'screen_audio',
+                            target: sink.target,
+                            label: `Screen audio: ${sink.label}`,
+                        });
+                    });
+                    this._audioMenu.menu.addMenuItem(item);
+                }
+            }
+        } catch (error) {
+            this._audioMenu.label.text = 'Input';
+            this._audioMenu.menu.addMenuItem(this._disabledItem('Audio controls unavailable'));
+            this._audioMenu.menu.addMenuItem(this._disabledItem(error.message));
+        }
+    }
+
+    async _selectAudioInput(target) {
+        try {
+            await this._runCli(['audio-use', target]);
+            await this._refreshAudioMenu();
+            Main.notify('Chirper', 'Audio input updated');
+        } catch (error) {
+            Main.notify('Chirper', `Failed to select audio input: ${error.message}`);
         }
     }
 
@@ -612,6 +715,11 @@ export default class ChirperExtension extends Extension {
         const message = response.message ?? state;
         this._lastState = state;
 
+        if (response.audio_label)
+            this._activeAudioLabel = response.audio_label;
+        else if (!this._isProcessingState(state) && state !== 'recording')
+            this._activeAudioLabel = null;
+
         if (!this._statusItem || !this._icon)
             return;
 
@@ -661,13 +769,17 @@ export default class ChirperExtension extends Extension {
         if (this._lastState === 'recording') {
             this._primaryIcon.icon_name = 'media-playback-stop-symbolic';
             this._primaryLabel.text = 'Stop Recording';
-            this._primarySubLabel.text = this._settings.get_boolean(PASTE_AFTER_STOP_KEY)
-                ? 'Paste after transcription'
-                : 'Copy after transcription';
+            this._primarySubLabel.text = this._activeAudioLabel
+                ? shortLabel(this._activeAudioLabel, 34)
+                : this._settings.get_boolean(PASTE_AFTER_STOP_KEY)
+                    ? 'Paste after transcription'
+                    : 'Copy after transcription';
         } else if (this._isProcessingState(this._lastState)) {
             this._primaryIcon.icon_name = 'view-refresh-symbolic';
             this._primaryLabel.text = 'Processing';
-            this._primarySubLabel.text = 'Transcribing and formatting';
+            this._primarySubLabel.text = this._activeAudioLabel
+                ? shortLabel(this._activeAudioLabel, 34)
+                : 'Transcribing and formatting';
         } else {
             this._primaryIcon.icon_name = 'audio-input-microphone-symbolic';
             this._primaryLabel.text = 'Start Recording';
@@ -692,7 +804,7 @@ export default class ChirperExtension extends Extension {
 
         if (state === 'recording') {
             this._overlayIcon.icon_name = 'media-record-symbolic';
-            this._overlayLabel.text = 'Recording';
+            this._overlayLabel.text = this._overlayText('Recording');
             this._overlay.show();
             this._startOverlayPulse();
             return;
@@ -700,7 +812,7 @@ export default class ChirperExtension extends Extension {
 
         if (this._isProcessingState(state)) {
             this._overlayIcon.icon_name = 'view-refresh-symbolic';
-            this._overlayLabel.text = 'Processing';
+            this._overlayLabel.text = this._overlayText('Processing');
             this._overlay.show();
             this._startOverlayPulse();
             return;
@@ -708,6 +820,13 @@ export default class ChirperExtension extends Extension {
 
         this._overlay.hide();
         this._stopOverlayPulse();
+    }
+
+    _overlayText(action) {
+        if (!this._activeAudioLabel)
+            return action;
+
+        return `${action}\n${shortLabel(this._activeAudioLabel, 34)}`;
     }
 
     _startOverlayPulse() {

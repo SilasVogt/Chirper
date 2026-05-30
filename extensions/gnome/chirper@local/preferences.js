@@ -138,6 +138,7 @@ class ChirperPreferencesBuilder {
         this._extensionPath = extensionPath;
         this._settings = settings;
         this._runtime = loadJsonFile(GLib.build_filenamev([extensionPath, 'runtime.json']));
+        this._audioRows = [];
         this._installedRows = [];
         this._downloadRows = [];
     }
@@ -169,6 +170,30 @@ class ChirperPreferencesBuilder {
             title: 'Recording Shortcut',
             subtitle: formatAccelerator(shortcut),
         }));
+
+        const audioGroup = new Adw.PreferencesGroup({
+            title: 'Audio Input',
+            description: 'Choose the microphone or capture source used for normal recordings.',
+        });
+        page.add(audioGroup);
+
+        this._currentAudioRow = new Adw.ActionRow({
+            title: 'Current Input',
+            subtitle: 'Loading',
+        });
+        audioGroup.add(this._currentAudioRow);
+
+        const refreshAudioRow = new Adw.ActionRow({
+            title: 'Refresh Inputs',
+            subtitle: 'Reload PipeWire sources from the current session.',
+        });
+        addButton(refreshAudioRow, 'Refresh', () => this._refreshAudioInputs());
+        audioGroup.add(refreshAudioRow);
+
+        this._audioInputsGroup = new Adw.PreferencesGroup({
+            title: 'Available Inputs',
+        });
+        page.add(this._audioInputsGroup);
 
         const daemonGroup = new Adw.PreferencesGroup({
             title: 'Daemon',
@@ -238,7 +263,61 @@ class ChirperPreferencesBuilder {
             subtitle: 'Not connected yet',
         }));
 
+        this._refreshAudioInputs();
         this._refreshModels();
+    }
+
+    async _refreshAudioInputs() {
+        this._currentAudioRow.subtitle = 'Loading';
+        this._clearRows(this._audioInputsGroup, this._audioRows);
+
+        try {
+            const output = await this._runCli(['audio-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current ?? {};
+            const sources = data.sources ?? [];
+
+            this._currentAudioRow.subtitle = current.label ?? 'Default microphone';
+
+            const defaultRow = new Adw.ActionRow({
+                title: 'Default microphone',
+                subtitle: current.target ? 'Let PipeWire choose the default source' : 'Selected',
+            });
+            addButton(defaultRow, current.target ? 'Use' : 'Selected', () => this._selectAudioInput('auto'), {
+                sensitive: Boolean(current.target),
+            });
+            this._audioInputsGroup.add(defaultRow);
+            this._audioRows.push(defaultRow);
+
+            for (const source of sources) {
+                const row = new Adw.ActionRow({
+                    title: source.label,
+                    subtitle: source.target,
+                });
+                addButton(row, source.selected ? 'Selected' : 'Use', () => this._selectAudioInput(source.target), {
+                    sensitive: !source.selected,
+                });
+                this._audioInputsGroup.add(row);
+                this._audioRows.push(row);
+            }
+
+            if (sources.length === 0)
+                this._addInfoRow(this._audioInputsGroup, this._audioRows, 'No PipeWire inputs found');
+        } catch (error) {
+            this._currentAudioRow.subtitle = 'Audio controls unavailable';
+            this._addInfoRow(this._audioInputsGroup, this._audioRows, error.message);
+        }
+    }
+
+    async _selectAudioInput(target) {
+        this._currentAudioRow.subtitle = 'Selecting input';
+
+        try {
+            await this._runCli(['audio-use', target]);
+            await this._refreshAudioInputs();
+        } catch (error) {
+            this._currentAudioRow.subtitle = error.message;
+        }
     }
 
     async _refreshModels() {

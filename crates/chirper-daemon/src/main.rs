@@ -5,7 +5,9 @@ use std::{
     path::Path,
 };
 
-use chirper_api::{default_socket_path, ApiRequest, ApiResponse};
+use chirper_api::{
+    default_socket_path, ApiRequest, ApiResponse, AudioCaptureKind, AudioCaptureTarget,
+};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
@@ -117,14 +119,14 @@ fn handle_request(request: ApiRequest, state: &mut DaemonState) -> (ApiResponse,
     let should_shutdown = matches!(request, ApiRequest::Shutdown);
     let response = match request {
         ApiRequest::Status => status_response(state),
-        ApiRequest::Toggle => {
+        ApiRequest::Toggle { audio } => {
             if state.workflow == WorkflowState::Recording {
                 stop_recording(state)
             } else {
-                start_recording(state)
+                start_recording(state, audio)
             }
         }
-        ApiRequest::StartRecording => start_recording(state),
+        ApiRequest::StartRecording { audio } => start_recording(state, audio),
         ApiRequest::StopRecording => stop_recording(state),
         ApiRequest::Shutdown => ApiResponse::ok(state_name(state.workflow), "daemon shutting down"),
     };
@@ -136,6 +138,7 @@ fn handle_request(request: ApiRequest, state: &mut DaemonState) -> (ApiResponse,
 struct DaemonState {
     workflow: WorkflowState,
     recorder: Option<PipeWireRecorder>,
+    active_audio: Option<ActiveAudioTarget>,
 }
 
 impl Default for DaemonState {
@@ -143,17 +146,28 @@ impl Default for DaemonState {
         Self {
             workflow: WorkflowState::Idle,
             recorder: None,
+            active_audio: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAudioTarget {
+    target: Option<String>,
+    label: String,
 }
 
 fn status_response(state: &DaemonState) -> ApiResponse {
     let mut response = ApiResponse::ok(state_name(state.workflow), "daemon ready");
     response.recording_path = active_recording_path(state);
+    apply_active_audio(&mut response, state.active_audio.as_ref());
     response
 }
 
-fn start_recording(state: &mut DaemonState) -> ApiResponse {
+fn start_recording(
+    state: &mut DaemonState,
+    requested_audio: Option<AudioCaptureTarget>,
+) -> ApiResponse {
     if state.workflow != WorkflowState::Idle {
         return ApiResponse::error(
             state_name(state.workflow),
@@ -171,9 +185,14 @@ fn start_recording(state: &mut DaemonState) -> ApiResponse {
             return ApiResponse::error(state_name(state.workflow), error.to_string());
         }
     };
-    let mut recorder = PipeWireRecorder::new(PipeWireRecorderOptions::from_config(&config));
+    let active_audio = resolve_audio_target(&config, requested_audio);
+    let mut options = PipeWireRecorderOptions::from_config(&config);
+    options.target = active_audio.target.clone();
+
+    let mut recorder = PipeWireRecorder::new(options);
     if let Err(error) = recorder.start_recording() {
         state.workflow = WorkflowState::Idle;
+        state.active_audio = None;
         return ApiResponse::error(state_name(state.workflow), error.to_string());
     }
 
@@ -181,10 +200,12 @@ fn start_recording(state: &mut DaemonState) -> ApiResponse {
         .active_path()
         .map(|path| path.display().to_string());
     state.recorder = Some(recorder);
+    state.active_audio = Some(active_audio);
     state.workflow = WorkflowState::Recording;
 
     let mut response = ApiResponse::ok(state_name(state.workflow), "recording started");
     response.recording_path = recording_path;
+    apply_active_audio(&mut response, state.active_audio.as_ref());
     response
 }
 
@@ -201,6 +222,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
 
     let Some(mut recorder) = state.recorder.take() else {
         state.workflow = WorkflowState::Idle;
+        state.active_audio = None;
         return ApiResponse::error(state_name(state.workflow), "recording state was missing");
     };
 
@@ -208,16 +230,20 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
         Ok(audio) => audio,
         Err(error) => {
             state.workflow = WorkflowState::Idle;
+            state.active_audio = None;
             return ApiResponse::error(state_name(state.workflow), error.to_string());
         }
     };
     let recording_path = Some(audio.path.display().to_string());
+    let active_audio = state.active_audio.clone();
     let config = match ChirperConfig::load_default() {
         Ok(config) => config,
         Err(error) => {
             state.workflow = WorkflowState::Idle;
             let mut response = ApiResponse::error(state_name(state.workflow), error.to_string());
             response.recording_path = recording_path;
+            apply_active_audio(&mut response, active_audio.as_ref());
+            state.active_audio = None;
             return response;
         }
     };
@@ -229,6 +255,8 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
             state.workflow = WorkflowState::Idle;
             let mut response = ApiResponse::error(state_name(state.workflow), error);
             response.recording_path = recording_path;
+            apply_active_audio(&mut response, active_audio.as_ref());
+            state.active_audio = None;
             return response;
         }
     };
@@ -241,6 +269,8 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
             let mut response = ApiResponse::error(state_name(state.workflow), error);
             response.recording_path = recording_path;
             response.transcript = Some(transcript.text);
+            apply_active_audio(&mut response, active_audio.as_ref());
+            state.active_audio = None;
             return response;
         }
     };
@@ -251,6 +281,8 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
         response.recording_path = recording_path;
         response.transcript = Some(transcript.text);
         response.formatted = Some(formatted);
+        apply_active_audio(&mut response, active_audio.as_ref());
+        state.active_audio = None;
         return response;
     }
 
@@ -261,17 +293,53 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
         response.recording_path = recording_path;
         response.transcript = Some(transcript.text);
         response.formatted = Some(formatted);
+        apply_active_audio(&mut response, active_audio.as_ref());
+        state.active_audio = None;
         return response;
     }
 
     state.workflow = WorkflowState::Idle;
+    state.active_audio = None;
     let mut response =
         ApiResponse::ok(state_name(state.workflow), "transcript copied to clipboard");
     response.recording_path = recording_path;
     response.transcript = Some(transcript.text);
     response.formatted = Some(formatted);
     response.copied = true;
+    apply_active_audio(&mut response, active_audio.as_ref());
     response
+}
+
+fn resolve_audio_target(
+    config: &ChirperConfig,
+    requested_audio: Option<AudioCaptureTarget>,
+) -> ActiveAudioTarget {
+    if let Some(audio) = requested_audio {
+        let fallback = match audio.kind {
+            AudioCaptureKind::Input => "Microphone".to_string(),
+            AudioCaptureKind::ScreenAudio => "Screen audio".to_string(),
+        };
+        return ActiveAudioTarget {
+            target: audio.target.filter(|target| !target.trim().is_empty()),
+            label: audio.label.unwrap_or(fallback),
+        };
+    }
+
+    ActiveAudioTarget {
+        target: config.pipewire_target.clone(),
+        label: config
+            .pipewire_target
+            .as_ref()
+            .map(|target| format!("Input: {target}"))
+            .unwrap_or_else(|| "Default microphone".to_string()),
+    }
+}
+
+fn apply_active_audio(response: &mut ApiResponse, active_audio: Option<&ActiveAudioTarget>) {
+    if let Some(active_audio) = active_audio {
+        response.audio_target = active_audio.target.clone();
+        response.audio_label = Some(active_audio.label.clone());
+    }
 }
 
 fn transcribe_audio(
