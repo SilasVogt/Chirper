@@ -15,9 +15,11 @@ asr_backend = "whisper-cpp"
 # Start with "auto". On AMD, useful explicit values are "rocm" and "vulkan".
 gpu_backend = "auto"
 
-# "rules" is fast local punctuation/symbol replacement. "ollama" first applies
+# "rules" is fast local punctuation/symbol replacement plus vocabulary,
+# edit commands, and conservative domain/email cleanup. "ollama" first applies
 # those rules, then asks the selected local Ollama model to polish casing,
-# punctuation, spacing, and paragraph structure.
+# punctuation, spacing, and paragraph structure using the raw transcript as
+# additional context.
 formatter_backend = "rules"
 
 # Initial insertion backends will be "clipboard" and "uinput".

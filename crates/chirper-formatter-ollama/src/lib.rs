@@ -37,24 +37,20 @@ impl OllamaFormatter {
         Self { options }
     }
 
-    fn ensure_model_installed(&self) -> ChirperResult<()> {
-        let models = list_ollama_models(&self.options.command)?;
-        if models.iter().any(|model| model.name == self.options.model) {
-            return Ok(());
-        }
-
-        Err(ChirperError::Formatting(format!(
-            "Ollama model `{}` is not installed; run `ollama pull {}` first",
-            self.options.model, self.options.model
-        )))
-    }
-}
-
-impl Formatter for OllamaFormatter {
-    fn format(&self, transcript: &Transcript, mode: DictationMode) -> ChirperResult<String> {
+    pub fn format_with_context(
+        &self,
+        raw_transcript: &Transcript,
+        preprocessed_text: &str,
+        mode: DictationMode,
+    ) -> ChirperResult<String> {
         self.ensure_model_installed()?;
 
-        let prompt = build_formatting_prompt(&transcript.text, mode, &self.options.vocabulary);
+        let prompt = build_formatting_prompt(
+            &raw_transcript.text,
+            preprocessed_text,
+            mode,
+            &self.options.vocabulary,
+        );
         let output = Command::new(&self.options.command)
             .arg("run")
             .arg("--nowordwrap")
@@ -80,13 +76,31 @@ impl Formatter for OllamaFormatter {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let formatted = clean_model_output(&stdout);
-        if formatted.is_empty() && !transcript.text.trim().is_empty() {
+        if formatted.is_empty() && !preprocessed_text.trim().is_empty() {
             return Err(ChirperError::Formatting(
                 "ollama returned an empty formatter response".to_string(),
             ));
         }
 
         Ok(formatted)
+    }
+
+    fn ensure_model_installed(&self) -> ChirperResult<()> {
+        let models = list_ollama_models(&self.options.command)?;
+        if models.iter().any(|model| model.name == self.options.model) {
+            return Ok(());
+        }
+
+        Err(ChirperError::Formatting(format!(
+            "Ollama model `{}` is not installed; run `ollama pull {}` first",
+            self.options.model, self.options.model
+        )))
+    }
+}
+
+impl Formatter for OllamaFormatter {
+    fn format(&self, transcript: &Transcript, mode: DictationMode) -> ChirperResult<String> {
+        self.format_with_context(transcript, &transcript.text, mode)
     }
 }
 
@@ -127,7 +141,8 @@ pub fn parse_ollama_list(stdout: &str) -> Vec<OllamaModel> {
 }
 
 fn build_formatting_prompt(
-    text: &str,
+    raw_text: &str,
+    preprocessed_text: &str,
     mode: DictationMode,
     vocabulary: &[VocabularyEntry],
 ) -> String {
@@ -154,8 +169,10 @@ Return only the final text. Do not explain, summarize, add facts, or wrap the re
 You are a conservative proofreader for speech-to-text output, not a rewriting assistant.
 Preserve the speaker's meaning, wording, order, and all ordinary content words.
 Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
-The input has already passed through Chirper's local rules and preferred spelling preprocessor.
-Do not reinterpret spelling commands, duplicate corrected names, or undo existing corrections.
+You receive both the raw transcript and Chirper's local preprocessed draft.
+The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
+Use the raw transcript only as extra evidence for intended spelling or context clues, such as \"spelled as one word in Pascal case\".
+Do not reintroduce text removed from the draft, do not output edit commands, do not duplicate corrected names, and do not undo existing corrections.
 If the text looks like code, shell input, Markdown, a URL, or an email address, preserve that structure.
 Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
 Do not add line breaks unless the input already contains them or the user clearly dictated a paragraph break.
@@ -164,9 +181,14 @@ If the input is empty or contains no speech, return an empty string.
 
 Mode: {mode:?}
 
-Input:
+Raw transcript:
 <<<
-{text}
+{raw_text}
+>>>
+
+Preprocessed draft:
+<<<
+{preprocessed_text}
 >>>
 
 Final text:"
@@ -238,7 +260,8 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
     #[test]
     fn prompt_contains_mode_and_input() {
         let prompt = build_formatting_prompt(
-            "hello comma world",
+            "hello comma world that's spelled as one word in pascal case",
+            "HelloWorld",
             DictationMode::Standard,
             &[VocabularyEntry {
                 spoken: "silas on linux".to_string(),
@@ -247,8 +270,12 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         );
 
         assert!(prompt.contains("Mode: Standard"));
-        assert!(prompt.contains("hello comma world"));
+        assert!(prompt.contains("Raw transcript:"));
+        assert!(prompt.contains("hello comma world that's spelled as one word"));
+        assert!(prompt.contains("Preprocessed draft:"));
+        assert!(prompt.contains("HelloWorld"));
         assert!(prompt.contains("Return only the final text"));
+        assert!(prompt.contains("authoritative baseline"));
         assert!(prompt.contains("\"silas on linux\" => \"SilasOnLinux\""));
     }
 

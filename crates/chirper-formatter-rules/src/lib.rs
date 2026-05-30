@@ -56,7 +56,7 @@ pub fn format_spoken_rules_with_vocabulary(
         }
     }
 
-    render(&pieces, mode)
+    rewrite_contextual_phrases(render(&pieces, mode))
 }
 
 pub fn learn_spelling_vocabulary(text: &str) -> Vec<VocabularyEntry> {
@@ -682,9 +682,7 @@ fn match_command(tokens: &[Token], mode: DictationMode) -> Option<(RenderPiece, 
         ("single", Some("quote"), _) => Some((RenderPiece::Tight("'"), 2)),
         ("open" | "start", Some("quote"), _) => Some((RenderPiece::Open("\""), 2)),
         ("close" | "end", Some("quote"), _) => Some((RenderPiece::Close("\""), 2)),
-        ("dot", Some("com" | "org" | "net" | "io" | "dev" | "local"), _) => {
-            Some((RenderPiece::Tight("."), 1))
-        }
+        ("dot", Some(tld), _) if known_domain_tld(tld) => Some((RenderPiece::Tight("."), 1)),
         ("no", Some("space"), _) if aggressive => Some((RenderPiece::NoSpace, 2)),
         _ => match first {
             "comma" => Some((RenderPiece::Punct(","), 1)),
@@ -774,6 +772,241 @@ fn render(pieces: &[RenderPiece], mode: DictationMode) -> String {
     }
 
     output.trim().to_string()
+}
+
+fn rewrite_contextual_phrases(text: String) -> String {
+    rewrite_domain_prepositions(rewrite_domain_tokens(rewrite_email_phrases(text)))
+}
+
+fn rewrite_email_phrases(text: String) -> String {
+    let mut segments = split_text_segments(&text);
+    let mut tokens = word_segment_indexes(&segments);
+    let mut index = 0;
+
+    while index < tokens.len() {
+        if !segments[tokens[index]].value.eq_ignore_ascii_case("email") {
+            index += 1;
+            continue;
+        }
+
+        if index + 5 < tokens.len()
+            && segments[tokens[index + 1]].value.eq_ignore_ascii_case("me")
+            && matches_ignore_ascii_case(&segments[tokens[index + 2]].value, &["on", "at"])
+            && segments[tokens[index + 4]].value.eq_ignore_ascii_case("at")
+            && domain_token(&segments[tokens[index + 5]].value).is_some()
+        {
+            let local = email_part_token(&segments[tokens[index + 3]].value);
+            let (domain, punctuation) = domain_token(&segments[tokens[index + 5]].value).unwrap();
+            segments[tokens[index + 2]].value = "at".to_string();
+            segments[tokens[index + 3]].value = format!(
+                "{}@{}{}",
+                local.to_ascii_lowercase(),
+                domain.to_ascii_lowercase(),
+                punctuation
+            );
+            clear_word_and_preceding_whitespace(&mut segments, tokens[index + 4]);
+            clear_word_and_preceding_whitespace(&mut segments, tokens[index + 5]);
+            tokens = word_segment_indexes(&segments);
+            index += 4;
+            continue;
+        }
+
+        if index + 3 < tokens.len()
+            && !segments[tokens[index + 1]].value.eq_ignore_ascii_case("me")
+            && segments[tokens[index + 2]].value.eq_ignore_ascii_case("at")
+            && domain_token(&segments[tokens[index + 3]].value).is_some()
+        {
+            let local = email_part_token(&segments[tokens[index + 1]].value);
+            let (domain, punctuation) = domain_token(&segments[tokens[index + 3]].value).unwrap();
+            segments[tokens[index + 1]].value = format!(
+                "{}@{}{}",
+                local.to_ascii_lowercase(),
+                domain.to_ascii_lowercase(),
+                punctuation
+            );
+            clear_word_and_preceding_whitespace(&mut segments, tokens[index + 2]);
+            clear_word_and_preceding_whitespace(&mut segments, tokens[index + 3]);
+            tokens = word_segment_indexes(&segments);
+            index += 2;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    render_text_segments(&segments)
+}
+
+fn rewrite_domain_tokens(text: String) -> String {
+    let mut segments = split_text_segments(&text);
+
+    for segment in segments.iter_mut().filter(|segment| !segment.whitespace) {
+        if let Some((domain, punctuation)) = domain_token(&segment.value) {
+            segment.value = format!("{}{}", domain.to_ascii_lowercase(), punctuation);
+        }
+    }
+
+    render_text_segments(&segments)
+}
+
+fn rewrite_domain_prepositions(text: String) -> String {
+    let mut segments = split_text_segments(&text);
+    let tokens = word_segment_indexes(&segments);
+
+    for index in 0..tokens.len().saturating_sub(1) {
+        if !segments[tokens[index]].value.eq_ignore_ascii_case("on")
+            || domain_token(&segments[tokens[index + 1]].value).is_none()
+            || !domain_preposition_context(&segments, &tokens, index)
+        {
+            continue;
+        }
+
+        segments[tokens[index]].value = "at".to_string();
+    }
+
+    render_text_segments(&segments)
+}
+
+fn domain_preposition_context(segments: &[TextSegment], tokens: &[usize], index: usize) -> bool {
+    let previous = index
+        .checked_sub(1)
+        .map(|previous| segments[tokens[previous]].value.to_ascii_lowercase());
+    let previous_two = index
+        .checked_sub(2)
+        .map(|previous| segments[tokens[previous]].value.to_ascii_lowercase());
+
+    matches!(
+        previous.as_deref(),
+        Some("media" | "site" | "website" | "blog" | "profile")
+    ) || matches!(
+        (previous_two.as_deref(), previous.as_deref()),
+        (Some("working"), Some("on"))
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextSegment {
+    value: String,
+    whitespace: bool,
+}
+
+fn split_text_segments(text: &str) -> Vec<TextSegment> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut current_whitespace = None;
+
+    for character in text.chars() {
+        let whitespace = character.is_whitespace();
+        if current_whitespace == Some(whitespace) {
+            current.push(character);
+            continue;
+        }
+
+        if let Some(previous_whitespace) = current_whitespace {
+            segments.push(TextSegment {
+                value: std::mem::take(&mut current),
+                whitespace: previous_whitespace,
+            });
+        }
+
+        current.push(character);
+        current_whitespace = Some(whitespace);
+    }
+
+    if let Some(whitespace) = current_whitespace {
+        segments.push(TextSegment {
+            value: current,
+            whitespace,
+        });
+    }
+
+    segments
+}
+
+fn word_segment_indexes(segments: &[TextSegment]) -> Vec<usize> {
+    segments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, segment)| {
+            (!segment.whitespace && !segment.value.is_empty()).then_some(index)
+        })
+        .collect()
+}
+
+fn clear_word_and_preceding_whitespace(segments: &mut [TextSegment], word_index: usize) {
+    segments[word_index].value.clear();
+
+    if word_index > 0 && segments[word_index - 1].whitespace {
+        segments[word_index - 1].value.clear();
+    }
+}
+
+fn render_text_segments(segments: &[TextSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.value.as_str())
+        .collect::<String>()
+}
+
+fn matches_ignore_ascii_case(value: &str, options: &[&str]) -> bool {
+    options
+        .iter()
+        .any(|option| value.eq_ignore_ascii_case(option))
+}
+
+fn email_part_token(token: &str) -> String {
+    token
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '.')
+        .to_string()
+}
+
+fn domain_token(token: &str) -> Option<(String, &'static str)> {
+    let punctuation = trailing_punctuation(token).unwrap_or("");
+    let domain = token
+        .trim_end_matches(|character: char| matches!(character, ',' | '.' | '?' | '!' | ':' | ';'));
+
+    if known_domain(domain) {
+        Some((domain.to_string(), punctuation))
+    } else {
+        None
+    }
+}
+
+fn known_domain(domain: &str) -> bool {
+    let Some((name, tld)) = domain.rsplit_once('.') else {
+        return false;
+    };
+
+    !name.is_empty()
+        && !tld.is_empty()
+        && domain
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+        && known_domain_tld(&tld.to_ascii_lowercase())
+}
+
+fn known_domain_tld(tld: &str) -> bool {
+    matches!(
+        tld,
+        "ai" | "app"
+            | "cloud"
+            | "co"
+            | "com"
+            | "dev"
+            | "gg"
+            | "io"
+            | "local"
+            | "me"
+            | "net"
+            | "org"
+            | "site"
+            | "social"
+            | "systems"
+            | "tech"
+            | "tv"
+            | "uk"
+            | "xyz"
+    )
 }
 
 fn push_word(output: &mut String, word: &str, suppress_next_space: &mut bool) {
@@ -1058,6 +1291,50 @@ mod tests {
         assert_eq!(
             format_spoken_rules("look at star", DictationMode::Auto),
             "look at star"
+        );
+    }
+
+    #[test]
+    fn domain_words_render_as_lowercase_domains() {
+        assert_eq!(
+            format_spoken_rules(
+                "visit Silas dot systems and Silas dot GG",
+                DictationMode::Auto
+            ),
+            "visit silas.systems and silas.gg"
+        );
+    }
+
+    #[test]
+    fn email_context_rewrites_spoken_address() {
+        assert_eq!(
+            format_spoken_rules(
+                "email me on Silas at Silas dot systems",
+                DictationMode::Auto
+            ),
+            "email me at silas@silas.systems"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "or you can email Silas at Silas dot systems.",
+                DictationMode::Auto
+            ),
+            "or you can email silas@silas.systems."
+        );
+        assert_eq!(
+            format_spoken_rules("email me at example dot com", DictationMode::Auto),
+            "email me at example.com"
+        );
+    }
+
+    #[test]
+    fn domain_contact_phrases_use_at_preposition() {
+        assert_eq!(
+            format_spoken_rules(
+                "apps I am working on on Silas dot systems and social media on Silas dot GG",
+                DictationMode::Auto
+            ),
+            "apps I am working on at silas.systems and social media at silas.gg"
         );
     }
 

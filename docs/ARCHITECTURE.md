@@ -60,8 +60,12 @@ Backends should be swappable behind narrow interfaces:
 - `AudioSource`: start and stop capture, returning audio data or a recording path.
 - `AsrEngine`: turn captured audio into a transcript.
 - `Formatter`: optionally clean, rewrite, or style the transcript. The local
-  rules preprocessor stays first in the pipeline; LLM formatters receive the
-  rule-processed transcript plus preferred spelling context.
+  rules preprocessor stays first in the pipeline. It handles spoken punctuation,
+  edit commands, configured vocabulary, learned spelling corrections, common
+  domain/email phrases, and conservative context-specific symbol cleanup.
+  LLM formatters receive both the raw transcript and the preprocessed draft:
+  the draft is the authoritative baseline, while the raw transcript is only
+  extra evidence for spelling/context clues.
 - `InsertionBackend`: insert final text into the focused application.
 - `HotkeyBackend`: optional frontend-side trigger source.
 

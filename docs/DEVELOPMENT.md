@@ -72,6 +72,11 @@ cargo run -p chirper-cli -- formatter-use ollama llama3.2
 Use `--no-enable` to update `ollama_model` while keeping the current formatter
 backend.
 
+The Ollama formatter always runs after the rules preprocessor. Its prompt
+includes the raw transcript plus the preprocessed draft; the draft is treated as
+authoritative so local edit commands, preferred spellings, and deterministic
+domain/email cleanup are not undone by the model.
+
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:
 

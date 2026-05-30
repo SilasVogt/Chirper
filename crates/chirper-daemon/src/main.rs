@@ -11,7 +11,7 @@ use chirper_api::{
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AsrEngine, AudioSource, ChirperConfig, Formatter, FormatterBackend, TextInserter, Transcript,
+    AsrEngine, AudioSource, ChirperConfig, FormatterBackend, TextInserter, Transcript,
     WorkflowState,
 };
 use chirper_formatter_ollama::{OllamaFormatter, OllamaOptions};
@@ -384,12 +384,8 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
         FormatterBackend::Rules => format_with_rules(config, transcript),
         FormatterBackend::Ollama => {
             let preformatted = format_with_rules(config, transcript)?;
-            let transcript = Transcript {
-                text: preformatted,
-                language: transcript.language.clone(),
-            };
             OllamaFormatter::new(OllamaOptions::from_config(config))
-                .format(&transcript, config.dictation_mode)
+                .format_with_context(transcript, &preformatted, config.dictation_mode)
                 .map_err(|error| error.to_string())
         }
         FormatterBackend::LlamaCpp => {

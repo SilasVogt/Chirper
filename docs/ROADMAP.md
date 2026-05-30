@@ -45,6 +45,8 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add Ollama model menu once formatter backend exists.
 - [x] Add modes: auto, standard, email, command, code.
 - [x] Add personal dictionary.
+- [x] Pass raw transcript plus preprocessed draft into Ollama formatting.
+- [x] Add deterministic domain/email cleanup before LLM formatting.
 - [ ] Add snippets.
 - [ ] Add app/context profiles.
 
