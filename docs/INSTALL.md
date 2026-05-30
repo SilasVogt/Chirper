@@ -159,7 +159,8 @@ The compare command runs models sequentially and unloads each model afterward by
 default. Reports include model output, timing, a hardware snapshot, and
 best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
 `chirper-model-compare` opens a simple GTK app with tickboxes for installed
-Ollama models, saved Codex configs, prompt-input options, and report storage.
+Ollama models, saved Codex configs, prompt-input options, report storage, live
+current-model progress, elapsed runtime, and hardware summary.
 
 ## Codex CLI Formatting
 

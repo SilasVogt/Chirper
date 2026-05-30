@@ -133,7 +133,8 @@ CPU/RAM/GPU/VRAM/power telemetry from `/proc` and `/sys`.
 
 `scripts/run-model-compare.sh` opens the GTK/libadwaita compare app. It exposes
 the same main options as checkboxes, model tickboxes, Codex profile management,
-prompt notes, and report folder selection.
+prompt notes, report folder selection, live current-model progress, elapsed
+runtime, and hardware summary.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

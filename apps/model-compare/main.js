@@ -9,6 +9,11 @@ Gio._promisify(
     'communicate_utf8_async',
     'communicate_utf8_finish'
 );
+Gio._promisify(
+    Gio.Subprocess.prototype,
+    'wait_async',
+    'wait_finish'
+);
 
 const PREFERRED_OLLAMA_MODELS = new Set(['granite4.1:8b', 'gemma3:4b']);
 const MODE_OPTIONS = [
@@ -46,6 +51,51 @@ async function runCommand(argv) {
     return stdout;
 }
 
+function readStreamLines(stream, onLine = null) {
+    const reader = new Gio.DataInputStream({ base_stream: stream });
+    const lines = [];
+
+    return new Promise((resolve, reject) => {
+        const readNext = () => {
+            reader.read_line_async(GLib.PRIORITY_DEFAULT, null, (source, result) => {
+                try {
+                    const [line] = source.read_line_finish_utf8(result);
+                    if (line === null) {
+                        resolve(lines.join('\n'));
+                        return;
+                    }
+
+                    lines.push(line);
+                    if (onLine)
+                        onLine(line);
+                    readNext();
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        };
+
+        readNext();
+    });
+}
+
+async function runCommandStreaming(argv, onProgressLine) {
+    const process = Gio.Subprocess.new(
+        argv,
+        Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+    );
+    const stdout = readStreamLines(process.get_stdout_pipe());
+    const stderr = readStreamLines(process.get_stderr_pipe(), onProgressLine);
+
+    await process.wait_async(null);
+    const [stdoutText, stderrText] = await Promise.all([stdout, stderr]);
+
+    if (!process.get_successful())
+        throw new Error(stderrText.trim() || `${argv[0]} failed`);
+
+    return stdoutText;
+}
+
 function cliPath() {
     return GLib.getenv('CHIRPER_CLI') || 'chirper';
 }
@@ -76,6 +126,72 @@ function entryText(row) {
 function textFromBuffer(buffer) {
     const [start, end] = buffer.get_bounds();
     return buffer.get_text(start, end, false);
+}
+
+function formatDurationMs(elapsedMs) {
+    if (!Number.isFinite(elapsedMs) || elapsedMs < 0)
+        return '0ms';
+
+    if (elapsedMs < 1000)
+        return `${Math.round(elapsedMs)}ms`;
+
+    let seconds = Math.floor(elapsedMs / 1000);
+    const hours = Math.floor(seconds / 3600);
+    seconds %= 3600;
+    const minutes = Math.floor(seconds / 60);
+    seconds %= 60;
+
+    if (hours > 0)
+        return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes > 0)
+        return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes))
+        return null;
+
+    const gib = 1024 ** 3;
+    const mib = 1024 ** 2;
+    if (bytes >= gib)
+        return `${(bytes / gib).toFixed(2)} GiB`;
+    if (bytes >= mib)
+        return `${(bytes / mib).toFixed(1)} MiB`;
+    return `${Math.round(bytes)} B`;
+}
+
+function shortGpuName(name) {
+    if (!name)
+        return null;
+
+    const match = name.match(/\[(AMD\/ATI|NVIDIA|Intel)[^\]]*\]\s*(.*?)(?:\s*\(rev|$)/);
+    if (match?.[2])
+        return match[2].trim();
+
+    return name;
+}
+
+function hardwareSummary(hardware) {
+    if (!hardware)
+        return 'Hardware unavailable';
+
+    const parts = [];
+    if (hardware.cpu_model)
+        parts.push(hardware.cpu_model);
+    if (hardware.gpu) {
+        parts.push(shortGpuName(hardware.gpu.name) || hardware.gpu.card || 'GPU detected');
+        const vram = formatBytes(hardware.gpu.vram_total_bytes);
+        if (vram)
+            parts.push(`${vram} VRAM`);
+        if (Number.isFinite(hardware.gpu.power_watts))
+            parts.push(`${Math.round(hardware.gpu.power_watts)} W now`);
+    }
+    const ram = formatBytes(hardware.ram_total_bytes);
+    if (ram)
+        parts.push(`${ram} RAM`);
+
+    return parts.join(' | ') || 'Hardware unavailable';
 }
 
 function makeButton(label, callback, cssClass = null) {
@@ -118,6 +234,10 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         this._runButton = null;
         this._refreshButton = null;
         this._addCodexButton = null;
+        this._elapsedTimerId = 0;
+        this._runStartedUsec = 0;
+        this._progressTotal = 0;
+        this._outputText = '';
         this._build();
         this._refreshModels();
     }
@@ -158,6 +278,7 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         this._buildOptionsGroup(main);
         this._buildOllamaGroup(main);
         this._buildCodexGroup(main);
+        this._buildProgressGroup(main);
         this._buildOutputGroup(main);
     }
 
@@ -342,6 +463,50 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         addRow.add_suffix(this._addCodexButton);
         addRow.activatable_widget = this._addCodexButton;
         this._codexGroup.add(addRow);
+    }
+
+    _buildProgressGroup(main) {
+        this._progressGroup = new Adw.PreferencesGroup({
+            title: 'Run Progress',
+            description: 'Visible while a comparison is running.',
+        });
+        this._progressGroup.visible = false;
+        main.append(this._progressGroup);
+
+        this._progressBar = new Gtk.ProgressBar({
+            show_text: true,
+            margin_top: 8,
+            margin_bottom: 8,
+            margin_start: 12,
+            margin_end: 12,
+        });
+        this._progressBar.set_fraction(0);
+        this._progressBar.set_text('Idle');
+        this._progressGroup.add(this._progressBar);
+
+        this._currentTargetRow = new Adw.ActionRow({
+            title: 'Current Model',
+            subtitle: 'Idle',
+        });
+        this._progressGroup.add(this._currentTargetRow);
+
+        this._elapsedRow = new Adw.ActionRow({
+            title: 'Runtime',
+            subtitle: '0ms',
+        });
+        this._progressGroup.add(this._elapsedRow);
+
+        this._hardwareRow = new Adw.ActionRow({
+            title: 'Hardware',
+            subtitle: 'Waiting for run',
+        });
+        this._progressGroup.add(this._hardwareRow);
+
+        this._summaryRow = new Adw.ActionRow({
+            title: 'Summary',
+            subtitle: 'Not run yet',
+        });
+        this._progressGroup.add(this._summaryRow);
     }
 
     _buildOutputGroup(main) {
@@ -548,21 +713,29 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
         }
 
         const args = this._buildCompareArgs(transcript);
-        this._outputBuffer.set_text(`$ ${[cliPath(), ...args].join(' ')}\n\n`, -1);
+        this._resetRunProgress();
+        this._setOutput(`$ ${[cliPath(), ...args].join(' ')}\n\n`);
         this._setBusy(true, 'Running comparison');
+        this._startElapsedTimer();
 
         try {
-            const output = await runCommand([cliPath(), ...args]);
-            this._outputBuffer.set_text(output, -1);
+            const output = await runCommandStreaming(
+                [cliPath(), ...args],
+                line => this._handleProgressLine(line)
+            );
+            this._stopElapsedTimer();
+            if (output.trim())
+                this._appendOutput(`\n${output}`);
             this._setBusy(false, 'Comparison finished');
         } catch (error) {
-            this._outputBuffer.set_text(error.message, -1);
+            this._stopElapsedTimer();
+            this._appendOutput(`\n${error.message}\n`);
             this._setBusy(false, 'Comparison failed');
         }
     }
 
     _buildCompareArgs(transcript) {
-        const args = ['format-compare'];
+        const args = ['format-compare', '--progress-json'];
         const mode = selectedOption(MODE_OPTIONS, this._modeRow);
         const promptInput = selectedOption(PROMPT_INPUT_OPTIONS, this._promptInputRow);
         const promptNote = textFromBuffer(this._promptNoteBuffer).trim();
@@ -610,6 +783,121 @@ const ModelCompareWindow = GObject.registerClass(class ModelCompareWindow extend
 
         args.push(transcript);
         return args;
+    }
+
+    _resetRunProgress() {
+        this._progressGroup.visible = true;
+        this._progressTotal = 0;
+        this._progressBar.set_fraction(0);
+        this._progressBar.set_text('Starting');
+        this._currentTargetRow.title = 'Current Model';
+        this._currentTargetRow.subtitle = 'Waiting for first model';
+        this._elapsedRow.subtitle = '0ms';
+        this._hardwareRow.subtitle = 'Collecting hardware snapshot';
+        this._summaryRow.subtitle = 'Starting comparison';
+    }
+
+    _handleProgressLine(line) {
+        let event = null;
+        try {
+            event = JSON.parse(line);
+        } catch {
+            if (line.trim())
+                this._appendOutput(`${line}\n`);
+            return;
+        }
+
+        switch (event.type) {
+        case 'started':
+            this._progressTotal = event.total ?? 0;
+            this._hardwareRow.subtitle = hardwareSummary(event.hardware);
+            this._summaryRow.subtitle = this._progressTotal > 0
+                ? `Testing ${this._progressTotal} model targets`
+                : 'Rules-only comparison';
+            this._setProgress(0, this._progressTotal);
+            break;
+        case 'target_started':
+            this._currentTargetRow.title = event.name ?? 'Current Model';
+            this._currentTargetRow.subtitle = `Testing ${event.index ?? 0} of ${event.total ?? this._progressTotal}`;
+            this._setProgress((event.index ?? 1) - 1, event.total ?? this._progressTotal);
+            this._appendOutput(`Testing ${event.name}\n`);
+            break;
+        case 'target_finished': {
+            const index = event.index ?? 0;
+            const total = event.total ?? this._progressTotal;
+            this._setProgress(index, total);
+            this._currentTargetRow.title = event.name ?? 'Current Model';
+            this._currentTargetRow.subtitle = event.ok
+                ? `Finished in ${formatDurationMs(event.elapsed_ms ?? 0)}`
+                : `Failed after ${formatDurationMs(event.elapsed_ms ?? 0)}`;
+            this._summaryRow.subtitle = `Finished ${index} of ${total}`;
+            const status = event.ok ? 'done' : `error: ${event.error ?? 'unknown error'}`;
+            this._appendOutput(`${event.name}: ${status} (${formatDurationMs(event.elapsed_ms ?? 0)})\n`);
+            break;
+        }
+        case 'finished': {
+            this._setProgress(event.total ?? this._progressTotal, event.total ?? this._progressTotal);
+            const summary = `Tested ${event.tested_models ?? 0} Models in ${formatDurationMs(event.elapsed_ms ?? 0)}`;
+            this._summaryRow.subtitle = event.report_path
+                ? `${summary} | ${event.report_path}`
+                : summary;
+            this._currentTargetRow.title = 'Complete';
+            this._currentTargetRow.subtitle = summary;
+            this._elapsedRow.subtitle = formatDurationMs(event.elapsed_ms ?? 0);
+            this._appendOutput(`${summary}\n`);
+            if (event.report_path)
+                this._appendOutput(`Report: ${event.report_path}\n`);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    _setProgress(done, total) {
+        if (total > 0) {
+            const fraction = Math.max(0, Math.min(1, done / total));
+            this._progressBar.set_fraction(fraction);
+            this._progressBar.set_text(`${done} / ${total}`);
+        } else {
+            this._progressBar.set_fraction(0);
+            this._progressBar.set_text('No model targets');
+        }
+    }
+
+    _startElapsedTimer() {
+        this._stopElapsedTimer();
+        this._runStartedUsec = GLib.get_monotonic_time();
+        this._elapsedTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+            this._updateElapsedRuntime();
+            return true;
+        });
+    }
+
+    _stopElapsedTimer() {
+        if (this._elapsedTimerId) {
+            GLib.source_remove(this._elapsedTimerId);
+            this._elapsedTimerId = 0;
+        }
+        this._updateElapsedRuntime();
+    }
+
+    _updateElapsedRuntime() {
+        if (!this._runStartedUsec)
+            return;
+
+        const elapsedMs = (GLib.get_monotonic_time() - this._runStartedUsec) / 1000;
+        this._elapsedRow.subtitle = formatDurationMs(elapsedMs);
+    }
+
+    _setOutput(text) {
+        this._outputText = text;
+        this._outputBuffer.set_text(this._outputText, -1);
+    }
+
+    _appendOutput(text) {
+        this._outputText += text;
+        this._outputBuffer.set_text(this._outputText, -1);
     }
 
     _setBusy(busy, status) {

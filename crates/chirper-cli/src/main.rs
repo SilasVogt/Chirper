@@ -2027,6 +2027,7 @@ struct FormatCompareArgs {
     prompt_input: ComparePromptInput,
     prompt_note: Option<String>,
     report_dir: Option<PathBuf>,
+    progress_json: bool,
     json: bool,
     text: String,
 }
@@ -2113,7 +2114,18 @@ fn format_compare(args: Vec<String>) {
     }
 
     let hardware = collect_hardware_snapshot(&config.ollama_command);
+    let total_targets = models.len() + codex_runs.len();
+    let compare_started = Instant::now();
     let mut results = Vec::new();
+    emit_compare_progress(
+        &args,
+        serde_json::json!({
+            "type": "started",
+            "total": total_targets,
+            "include_rules": args.include_rules,
+            "hardware": hardware_json(&hardware),
+        }),
+    );
 
     if args.include_rules {
         results.push(FormatCompareResult {
@@ -2125,7 +2137,20 @@ fn format_compare(args: Vec<String>) {
         });
     }
 
+    let mut target_index = 0usize;
+
     for model in models {
+        target_index += 1;
+        emit_compare_progress(
+            &args,
+            serde_json::json!({
+                "type": "target_started",
+                "index": target_index,
+                "total": total_targets,
+                "name": model.as_str(),
+                "elapsed_ms": compare_started.elapsed().as_millis(),
+            }),
+        );
         let formatter = OllamaFormatter::new(OllamaOptions {
             command: config.ollama_command.clone(),
             model: model.clone(),
@@ -2146,7 +2171,7 @@ fn format_compare(args: Vec<String>) {
             stop_ollama_model_silent(&config.ollama_command, &model);
         }
 
-        results.push(match result {
+        let result = match result {
             Ok(output) => FormatCompareResult {
                 name: model,
                 elapsed_ms,
@@ -2161,10 +2186,36 @@ fn format_compare(args: Vec<String>) {
                 output: None,
                 error: Some(error.to_string()),
             },
-        });
+        };
+        emit_compare_progress(
+            &args,
+            serde_json::json!({
+                "type": "target_finished",
+                "index": target_index,
+                "total": total_targets,
+                "name": result.name.as_str(),
+                "ok": result.error.is_none(),
+                "elapsed_ms": result.elapsed_ms,
+                "total_elapsed_ms": compare_started.elapsed().as_millis(),
+                "metrics": metrics_json(&result.metrics),
+                "error": result.error.as_deref(),
+            }),
+        );
+        results.push(result);
     }
 
     for (name, options) in codex_runs {
+        target_index += 1;
+        emit_compare_progress(
+            &args,
+            serde_json::json!({
+                "type": "target_started",
+                "index": target_index,
+                "total": total_targets,
+                "name": name.as_str(),
+                "elapsed_ms": compare_started.elapsed().as_millis(),
+            }),
+        );
         let formatter = CodexFormatter::new(options);
         let started = Instant::now();
         let (result, metrics) = run_with_resource_sampling(|| {
@@ -2178,7 +2229,7 @@ fn format_compare(args: Vec<String>) {
         });
         let elapsed_ms = started.elapsed().as_millis();
 
-        results.push(match result {
+        let result = match result {
             Ok(output) => FormatCompareResult {
                 name,
                 elapsed_ms,
@@ -2193,9 +2244,26 @@ fn format_compare(args: Vec<String>) {
                 output: None,
                 error: Some(error.to_string()),
             },
-        });
+        };
+        emit_compare_progress(
+            &args,
+            serde_json::json!({
+                "type": "target_finished",
+                "index": target_index,
+                "total": total_targets,
+                "name": result.name.as_str(),
+                "ok": result.error.is_none(),
+                "elapsed_ms": result.elapsed_ms,
+                "total_elapsed_ms": compare_started.elapsed().as_millis(),
+                "metrics": metrics_json(&result.metrics),
+                "error": result.error.as_deref(),
+            }),
+        );
+        results.push(result);
     }
 
+    let total_elapsed_ms = compare_started.elapsed().as_millis();
+    let tested_models = tested_model_count(&results);
     let report_path = args.report_dir.as_ref().map(|directory| {
         write_format_compare_report(
             directory,
@@ -2203,17 +2271,30 @@ fn format_compare(args: Vec<String>) {
             args.mode,
             args.prompt_input,
             args.prompt_note.as_deref(),
+            total_elapsed_ms,
             &transcript.text,
             &preformatted,
             &results,
         )
     });
+    emit_compare_progress(
+        &args,
+        serde_json::json!({
+            "type": "finished",
+            "total": total_targets,
+            "tested_models": tested_models,
+            "elapsed_ms": total_elapsed_ms,
+            "report_path": report_path.as_ref().and_then(|result| result.as_ref().ok().map(|path| path.display().to_string())),
+        }),
+    );
 
     if args.json {
         let value = serde_json::json!({
             "mode": format!("{:?}", args.mode),
             "prompt_input": args.prompt_input.label(),
             "prompt_note": args.prompt_note.as_deref(),
+            "tested_models": tested_models,
+            "total_elapsed_ms": total_elapsed_ms,
             "preprocessed_sent_to_model": args.prompt_input == ComparePromptInput::RawAndPreprocessed,
             "preprocessed": preformatted,
             "hardware": hardware_json(&hardware),
@@ -2230,6 +2311,10 @@ fn format_compare(args: Vec<String>) {
 
     println!("mode: {:?}", args.mode);
     println!("prompt_input: {}", args.prompt_input.label());
+    println!(
+        "summary: {}",
+        format_tested_summary(tested_models, total_elapsed_ms)
+    );
     if let Some(prompt_note) = args.prompt_note.as_deref() {
         println!("prompt_note: {prompt_note}");
     }
@@ -2281,6 +2366,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
     let mut prompt_note = None;
     let mut report_dir = None;
+    let mut progress_json = false;
     let mut json = false;
     let mut text = Vec::new();
     let mut index = 0;
@@ -2410,6 +2496,9 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--json" {
             json = true;
             index += 1;
+        } else if arg == "--progress-json" {
+            progress_json = true;
+            index += 1;
         } else {
             text.extend(args[index..].iter().cloned());
             break;
@@ -2429,6 +2518,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         prompt_input,
         prompt_note,
         report_dir,
+        progress_json,
         json,
         text: text.join(" "),
     }
@@ -2450,6 +2540,12 @@ fn read_prompt_note_file(path: &str) -> String {
         eprintln!("failed to read prompt file {}: {source}", path.display());
         std::process::exit(1);
     })
+}
+
+fn emit_compare_progress(args: &FormatCompareArgs, value: serde_json::Value) {
+    if args.progress_json {
+        eprintln!("{}", serde_json::to_string(&value).unwrap());
+    }
 }
 
 fn push_model_values(models: &mut Vec<String>, value: &str) {
@@ -2521,6 +2617,25 @@ fn format_compare_result_json(result: &FormatCompareResult) -> serde_json::Value
         "output": result.output,
         "error": result.error,
     })
+}
+
+fn tested_model_count(results: &[FormatCompareResult]) -> usize {
+    results
+        .iter()
+        .filter(|result| result.name != "rules")
+        .count()
+}
+
+fn format_tested_summary(tested_models: usize, elapsed_ms: u128) -> String {
+    let noun = if tested_models == 1 {
+        "Model"
+    } else {
+        "Models"
+    };
+    format!(
+        "Tested {tested_models} {noun} in {}",
+        format_elapsed_words(elapsed_ms)
+    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -2975,6 +3090,7 @@ fn write_format_compare_report(
     mode: DictationMode,
     prompt_input: ComparePromptInput,
     prompt_note: Option<&str>,
+    total_elapsed_ms: u128,
     raw_transcript: &str,
     preprocessed: &str,
     results: &[FormatCompareResult],
@@ -2995,6 +3111,12 @@ fn write_format_compare_report(
 
     let _ = writeln!(report, "Chirper format comparison");
     let _ = writeln!(report, "generated_unix_seconds: {timestamp}");
+    let _ = writeln!(
+        report,
+        "{}",
+        format_tested_summary(tested_model_count(results), total_elapsed_ms)
+    );
+    let _ = writeln!(report, "total_elapsed_ms: {total_elapsed_ms}");
     let _ = writeln!(report, "mode: {mode:?}");
     let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
     if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
@@ -3214,6 +3336,24 @@ fn format_bytes_decimal(bytes: u64) -> String {
 fn format_elapsed(elapsed_ms: u128) -> String {
     if elapsed_ms >= 1000 {
         format!("{:.2}s", elapsed_ms as f64 / 1000.0)
+    } else {
+        format!("{elapsed_ms}ms")
+    }
+}
+
+fn format_elapsed_words(elapsed_ms: u128) -> String {
+    let mut seconds = (elapsed_ms / 1000) as u64;
+    let hours = seconds / 3600;
+    seconds %= 3600;
+    let minutes = seconds / 60;
+    seconds %= 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else if elapsed_ms >= 1000 {
+        format!("{seconds}s")
     } else {
         format!("{elapsed_ms}ms")
     }
