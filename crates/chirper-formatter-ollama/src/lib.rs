@@ -171,7 +171,13 @@ Preserve the speaker's meaning, wording, order, and all ordinary content words.
 Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
 You receive both the raw transcript and Chirper's local preprocessed draft.
 The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
-Use the raw transcript only as extra evidence for intended spelling or context clues, such as \"spelled as one word in Pascal case\".
+Use the raw transcript as extra evidence for intended spelling and casing clues, such as \"spelled as one word in Pascal case\", \"pronounced ...\", \"capital p capital f\", \"all caps\", or letter-by-letter spellings.
+You MUST apply spoken spelling/casing instructions when they clearly modify a nearby name, handle, acronym, URL, email, version, or identifier.
+After applying a spoken instruction, remove the instruction words from the final text.
+Examples:
+- \"called pixel ferret tv that's capital p capital f capital t capital v\" -> \"called PixelFerretTV\"
+- \"j a n a pronounced yah nah\" -> \"Jana, pronounced Yah-nah\"
+- \"ops and things dot io slash episodes slash zero four two\" -> \"opsandthings.io/episodes/042\"
 Do not reintroduce text removed from the draft, do not output edit commands, do not duplicate corrected names, and do not undo existing corrections.
 If the text looks like code, shell input, Markdown, a URL, or an email address, preserve that structure.
 Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
@@ -276,6 +282,9 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         assert!(prompt.contains("HelloWorld"));
         assert!(prompt.contains("Return only the final text"));
         assert!(prompt.contains("authoritative baseline"));
+        assert!(prompt.contains("capital p capital f"));
+        assert!(prompt.contains("PixelFerretTV"));
+        assert!(prompt.contains("Jana, pronounced Yah-nah"));
         assert!(prompt.contains("\"silas on linux\" => \"SilasOnLinux\""));
     }
 
