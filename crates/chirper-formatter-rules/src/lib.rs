@@ -119,9 +119,17 @@ enum RenderPiece {
 fn match_scratch_command(tokens: &[Token]) -> Option<usize> {
     let first = tokens.first()?.normalized.as_str();
     let second = tokens.get(1).map(|token| token.normalized.as_str());
+    let third = tokens.get(2).map(|token| token.normalized.as_str());
+    let fourth = tokens.get(3).map(|token| token.normalized.as_str());
 
-    match (first, second) {
-        ("scratch" | "delete", Some("that" | "this" | "it")) => Some(2),
+    match (first, second, third, fourth) {
+        (
+            "scratch" | "delete",
+            Some("that" | "this" | "it"),
+            Some("last"),
+            Some("sentence" | "phrase" | "part"),
+        ) => Some(4),
+        ("scratch" | "delete", Some("that" | "this" | "it"), _, _) => Some(2),
         _ => None,
     }
 }
@@ -130,6 +138,31 @@ fn match_pascal_case_command(tokens: &[Token]) -> Option<usize> {
     let first = tokens.first()?.normalized.as_str();
     let second = tokens.get(1).map(|token| token.normalized.as_str());
     let third = tokens.get(2).map(|token| token.normalized.as_str());
+
+    if matches!(first, "that's" | "thats")
+        && second == Some("spelled")
+        && third == Some("as")
+        && tokens.get(3).map(|token| token.normalized.as_str()) == Some("one")
+        && tokens.get(4).map(|token| token.normalized.as_str()) == Some("word")
+        && tokens.get(5).map(|token| token.normalized.as_str()) == Some("in")
+        && tokens.get(6).map(|token| token.normalized.as_str()) == Some("pascal")
+        && tokens.get(7).map(|token| token.normalized.as_str()) == Some("case")
+    {
+        return Some(8);
+    }
+
+    if first == "that"
+        && second == Some("is")
+        && third == Some("spelled")
+        && tokens.get(3).map(|token| token.normalized.as_str()) == Some("as")
+        && tokens.get(4).map(|token| token.normalized.as_str()) == Some("one")
+        && tokens.get(5).map(|token| token.normalized.as_str()) == Some("word")
+        && tokens.get(6).map(|token| token.normalized.as_str()) == Some("in")
+        && tokens.get(7).map(|token| token.normalized.as_str()) == Some("pascal")
+        && tokens.get(8).map(|token| token.normalized.as_str()) == Some("case")
+    {
+        return Some(9);
+    }
 
     match (first, second, third) {
         ("in", Some("pascal"), Some("case")) => Some(3),
@@ -870,6 +903,13 @@ mod tests {
             format_spoken_rules("wrong start delete that correct start", DictationMode::Auto),
             "correct start"
         );
+        assert_eq!(
+            format_spoken_rules(
+                "wrong start scratch that last sentence correct start",
+                DictationMode::Auto
+            ),
+            "correct start"
+        );
     }
 
     #[test]
@@ -894,6 +934,20 @@ mod tests {
                 DictationMode::Auto
             ),
             "my name is SilasOnLinux"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "channel called Silas on Linux that's spelled as one word in Pascal case",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "channel called Silas on Linux that is spelled as one word in Pascal case",
+                DictationMode::Auto
+            ),
+            "channel called SilasOnLinux"
         );
     }
 
