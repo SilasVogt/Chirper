@@ -81,8 +81,8 @@ Select an arbitrary ggml model path:
 cargo run -p chirper-cli -- model-use /path/to/ggml-large-v3-turbo.bin
 ```
 
-The GNOME extension settings submenu uses the same CLI commands for graphical
-model switching and downloads.
+The GNOME extension panel menu and settings window use the same CLI commands
+for graphical model switching and downloads.
 
 ## Notes
 

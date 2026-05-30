@@ -71,16 +71,17 @@ The panel icon uses separate idle, recording, processing, and disconnected
 states. The overlay is shown while recording or processing and uses a subtle
 pulse animation.
 
-The settings submenu currently includes paste behavior, status refresh, daemon
-restart, Whisper model selection/downloads, an Ollama placeholder, and config
-folder actions.
+The panel menu keeps quick controls at the top level: paste behavior, Whisper
+model selection/downloads, an Ollama placeholder, status refresh, daemon restart,
+and config folder actions. `Open Settings Window` launches a small Adwaita
+preferences window from the installed extension directory.
 
 ## Paste Behavior
 
 The daemon copies the transcript to the clipboard. When `Paste After Stop` is
-enabled in the extension settings submenu, the extension remembers the previously
-focused window, restores it after transcription, then sends `Ctrl+V` through a
-GNOME Shell virtual keyboard device.
+enabled in the panel menu or preferences window, the extension remembers the
+previously focused window, restores it after transcription, then sends `Ctrl+V`
+through a GNOME Shell virtual keyboard device.
 
 This is why paste should be triggered from the extension or its hotkey rather
 than by manually moving focus before stopping recording.
@@ -97,13 +98,14 @@ It starts recording from idle and stops/pastes while recording.
 
 ## Model Settings
 
-The `Whisper Model` submenu lists installed local models and common downloadable
-models. Selecting a model updates `~/.config/chirper/config.toml`; the daemon
-uses the updated model on the next transcription.
+The `Whisper Model` submenu and settings window list installed local models
+and common downloadable models. Selecting a model updates
+`~/.config/chirper/config.toml`; the daemon uses the updated model on the next
+transcription.
 
-The `Ollama Model` submenu is present as a placeholder for the local LLM
-formatter work. The config already has `ollama_command` and `ollama_model`
-fields, but the formatter backend itself is still on the roadmap.
+The `Ollama Model` submenu and preferences section are present as placeholders
+for the local LLM formatter work. The config already has `ollama_command` and
+`ollama_model` fields, but the formatter backend itself is still on the roadmap.
 
 ## Design Boundary
 

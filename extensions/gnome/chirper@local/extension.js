@@ -30,7 +30,14 @@ const OVERLAY_HEIGHT = 82;
 const DAEMON_SERVICE = 'chirper-daemon.service';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
-const COMMON_WHISPER_DOWNLOADS = ['base', 'small', 'medium', 'large-v3-turbo'];
+const COMMON_WHISPER_DOWNLOADS = [
+    'base',
+    'small.en',
+    'small',
+    'medium',
+    'large-v3-turbo',
+    'large-v3-turbo-q5_0',
+];
 
 function daemonSocketPath() {
     const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR');
@@ -277,9 +284,6 @@ export default class ChirperExtension extends Extension {
 
         this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        const settingsMenu = new PopupMenu.PopupSubMenuMenuItem('Settings');
-        this._indicator.menu.addMenuItem(settingsMenu);
-
         this._pasteSwitch = new PopupMenu.PopupSwitchMenuItem(
             'Paste After Stop',
             this._settings.get_boolean(PASTE_AFTER_STOP_KEY)
@@ -288,12 +292,12 @@ export default class ChirperExtension extends Extension {
             this._settings.set_boolean(PASTE_AFTER_STOP_KEY, this._pasteSwitch.state);
             this._syncPrimaryAction();
         });
-        settingsMenu.menu.addMenuItem(this._pasteSwitch);
+        this._indicator.menu.addMenuItem(this._pasteSwitch);
 
-        settingsMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._modelMenu = new PopupMenu.PopupSubMenuMenuItem('Whisper Model');
-        settingsMenu.menu.addMenuItem(this._modelMenu);
+        this._indicator.menu.addMenuItem(this._modelMenu);
         this._modelMenu.menu.addMenuItem(this._disabledItem('Loading models'));
         this._modelMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
             if (isOpen)
@@ -301,28 +305,34 @@ export default class ChirperExtension extends Extension {
         });
 
         this._ollamaMenu = new PopupMenu.PopupSubMenuMenuItem('Ollama Model');
-        settingsMenu.menu.addMenuItem(this._ollamaMenu);
+        this._indicator.menu.addMenuItem(this._ollamaMenu);
         this._ollamaMenu.menu.addMenuItem(this._disabledItem('Formatter backend not implemented yet'));
 
-        settingsMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const preferencesItem = new PopupMenu.PopupMenuItem('Open Settings Window');
+        preferencesItem.connect('activate', () => {
+            this._openPreferences();
+        });
+        this._indicator.menu.addMenuItem(preferencesItem);
 
         const refreshItem = new PopupMenu.PopupMenuItem('Refresh Status');
         refreshItem.connect('activate', () => {
             this._refreshStatus(true);
         });
-        settingsMenu.menu.addMenuItem(refreshItem);
+        this._indicator.menu.addMenuItem(refreshItem);
 
         const restartDaemonItem = new PopupMenu.PopupMenuItem('Restart Daemon');
         restartDaemonItem.connect('activate', () => {
             this._controlDaemon('restart');
         });
-        settingsMenu.menu.addMenuItem(restartDaemonItem);
+        this._indicator.menu.addMenuItem(restartDaemonItem);
 
         const configItem = new PopupMenu.PopupMenuItem('Open Config Folder');
         configItem.connect('activate', () => {
             this._openConfigFolder();
         });
-        settingsMenu.menu.addMenuItem(configItem);
+        this._indicator.menu.addMenuItem(configItem);
 
         this._syncShortcutLabel();
         this._syncPrimaryAction();
@@ -786,6 +796,19 @@ export default class ChirperExtension extends Extension {
             Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(path, null), null);
         } catch (error) {
             Main.notify('Chirper', `Failed to open config folder: ${error.message}`);
+        }
+    }
+
+    _openPreferences() {
+        const settingsPath = GLib.build_filenamev([this.path, 'settings.js']);
+
+        try {
+            Gio.Subprocess.new(
+                ['gjs', '-m', settingsPath, this.path],
+                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE
+            );
+        } catch (error) {
+            Main.notify('Chirper', `Failed to open settings: ${error.message}`);
         }
     }
 }

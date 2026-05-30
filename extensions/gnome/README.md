@@ -11,7 +11,7 @@ It provides:
 - optional paste-after-stop behavior
 - Whisper model selection and common model downloads
 - an animated recording/processing overlay
-- a settings submenu with daemon and config actions
+- a preferences window plus quick daemon and config actions
 
 Install the development copy with:
 
