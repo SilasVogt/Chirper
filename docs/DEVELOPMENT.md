@@ -77,6 +77,19 @@ includes the raw transcript plus the preprocessed draft; the draft is treated as
 authoritative so local edit commands, preferred spellings, and deterministic
 domain/email cleanup are not undone by the model.
 
+To compare formatter output across all installed Ollama models without changing
+the saved daemon configuration:
+
+```sh
+cargo run -p chirper-cli -- format-compare "hello comma world"
+cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
+cargo run -p chirper-cli -- format-compare --json "hello comma world"
+```
+
+The command runs models sequentially so timing stays meaningful and large models
+do not compete for VRAM. It includes the rules-only preprocessed output unless
+`--no-rules` is passed.
+
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:
 

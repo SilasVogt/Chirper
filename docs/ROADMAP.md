@@ -47,6 +47,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add personal dictionary.
 - [x] Pass raw transcript plus preprocessed draft into Ollama formatting.
 - [x] Add deterministic domain/email cleanup before LLM formatting.
+- [x] Add CLI formatter comparison across installed Ollama models.
 - [ ] Add snippets.
 - [ ] Add app/context profiles.
 

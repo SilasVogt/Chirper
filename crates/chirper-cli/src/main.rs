@@ -3,7 +3,7 @@ use std::{
     env, fs,
     path::PathBuf,
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use chirper_api::{send_request, ApiRequest, ApiResponse};
@@ -124,6 +124,11 @@ fn main() {
 
     if matches!(first.as_deref(), Some("format-test")) {
         format_test(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("format-compare")) {
+        format_compare(args.collect());
         return;
     }
 
@@ -1196,6 +1201,223 @@ fn format_test(args: Vec<String>) {
     }
 
     println!("{}", format_text(&text, mode));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormatCompareArgs {
+    mode: DictationMode,
+    models: Vec<String>,
+    include_rules: bool,
+    json: bool,
+    text: String,
+}
+
+fn format_compare(args: Vec<String>) {
+    let args = parse_format_compare_args(args);
+
+    if args.text.is_empty() {
+        eprintln!(
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--no-rules] [--json] <text>"
+        );
+        std::process::exit(1);
+    }
+
+    let config = load_config_or_exit();
+    let transcript = chirper_core::Transcript {
+        text: args.text,
+        language: None,
+    };
+    let preformatted = match format_with_rules(&config, &transcript, args.mode) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let models = if args.models.is_empty() {
+        match list_ollama_models(&config.ollama_command) {
+            Ok(models) => models
+                .into_iter()
+                .map(|model| model.name)
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        args.models
+    };
+
+    if models.is_empty() && !args.include_rules {
+        eprintln!("no Ollama models installed; run `chirper ollama-list` or enable rules output");
+        std::process::exit(1);
+    }
+
+    let mut results = Vec::new();
+
+    if args.include_rules {
+        results.push(FormatCompareResult {
+            name: "rules".to_string(),
+            elapsed_ms: 0,
+            output: Some(preformatted.clone()),
+            error: None,
+        });
+    }
+
+    for model in models {
+        let started = Instant::now();
+        let formatter = OllamaFormatter::new(OllamaOptions {
+            command: config.ollama_command.clone(),
+            model: model.clone(),
+            vocabulary: config.vocabulary.clone(),
+        });
+        let result = formatter.format_with_context(&transcript, &preformatted, args.mode);
+        let elapsed_ms = started.elapsed().as_millis();
+
+        results.push(match result {
+            Ok(output) => FormatCompareResult {
+                name: model,
+                elapsed_ms,
+                output: Some(output),
+                error: None,
+            },
+            Err(error) => FormatCompareResult {
+                name: model,
+                elapsed_ms,
+                output: None,
+                error: Some(error.to_string()),
+            },
+        });
+    }
+
+    if args.json {
+        let value = serde_json::json!({
+            "mode": format!("{:?}", args.mode),
+            "preprocessed": preformatted,
+            "results": results.iter().map(format_compare_result_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("mode: {:?}", args.mode);
+    println!("preprocessed:");
+    println!("{}", preformatted);
+
+    for result in results {
+        println!();
+        println!(
+            "=== {} ({}) ===",
+            result.name,
+            format_elapsed(result.elapsed_ms)
+        );
+        if let Some(output) = result.output {
+            println!("{output}");
+        } else if let Some(error) = result.error {
+            println!("ERROR: {error}");
+        }
+    }
+}
+
+fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
+    let mut mode = configured_mode();
+    let mut models = Vec::new();
+    let mut include_rules = true;
+    let mut json = false;
+    let mut text = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if let Some(value) = arg.strip_prefix("--mode=") {
+            mode = parse_mode_name(value).unwrap_or(mode);
+            index += 1;
+        } else if arg == "--mode" {
+            if let Some(value) = args.get(index + 1) {
+                mode = parse_mode_name(value).unwrap_or(mode);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--model=") {
+            push_model_values(&mut models, value);
+            index += 1;
+        } else if arg == "--model" {
+            if let Some(value) = args.get(index + 1) {
+                push_model_values(&mut models, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--models=") {
+            push_model_values(&mut models, value);
+            index += 1;
+        } else if arg == "--models" {
+            if let Some(value) = args.get(index + 1) {
+                push_model_values(&mut models, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--no-rules" {
+            include_rules = false;
+            index += 1;
+        } else if arg == "--rules" {
+            include_rules = true;
+            index += 1;
+        } else if arg == "--json" {
+            json = true;
+            index += 1;
+        } else {
+            text.extend(args[index..].iter().cloned());
+            break;
+        }
+    }
+
+    FormatCompareArgs {
+        mode,
+        models,
+        include_rules,
+        json,
+        text: text.join(" "),
+    }
+}
+
+fn push_model_values(models: &mut Vec<String>, value: &str) {
+    for model in value.split(',') {
+        let model = model.trim();
+        if !model.is_empty() {
+            models.push(model.to_string());
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormatCompareResult {
+    name: String,
+    elapsed_ms: u128,
+    output: Option<String>,
+    error: Option<String>,
+}
+
+fn format_compare_result_json(result: &FormatCompareResult) -> serde_json::Value {
+    serde_json::json!({
+        "name": result.name,
+        "elapsed_ms": result.elapsed_ms,
+        "ok": result.error.is_none(),
+        "output": result.output,
+        "error": result.error,
+    })
+}
+
+fn format_elapsed(elapsed_ms: u128) -> String {
+    if elapsed_ms >= 1000 {
+        format!("{:.2}s", elapsed_ms as f64 / 1000.0)
+    } else {
+        format!("{elapsed_ms}ms")
+    }
 }
 
 fn dictate_test(seconds: Option<&str>) {
