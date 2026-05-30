@@ -76,10 +76,11 @@ states. The overlay is shown while recording or processing and uses a subtle
 pulse animation. While recording or processing, the overlay includes the selected
 input or screen-audio label when the daemon reports one.
 
-The panel menu keeps quick controls at the top level: paste behavior, Whisper
-model selection/downloads, an Ollama placeholder, status refresh, daemon restart,
-and config folder actions. `Open Settings Window` launches a small Adwaita
-preferences window from the installed extension directory.
+The panel menu keeps quick controls at the top level: paste behavior, audio
+input selection, one-shot screen audio, Whisper model selection/downloads,
+formatter selection, status refresh, daemon restart, and config folder actions.
+`Open Settings Window` launches a small Adwaita preferences window from the
+installed extension directory.
 
 ## Paste Behavior
 
@@ -124,9 +125,11 @@ and common downloadable models. Selecting a model updates
 `~/.config/chirper/config.toml`; the daemon uses the updated model on the next
 transcription.
 
-The `Ollama Model` submenu and preferences section are present as placeholders
-for the local LLM formatter work. The config already has `ollama_command` and
-`ollama_model` fields, but the formatter backend itself is still on the roadmap.
+The `Formatter` submenu and preferences section can switch between local rules,
+no formatting, and installed Ollama models. Selecting an Ollama model enables
+the Ollama formatter and stores `formatter_backend = "ollama"` plus the selected
+`ollama_model` in `~/.config/chirper/config.toml`. The daemon reads that config
+on the next transcription.
 
 ## Design Boundary
 

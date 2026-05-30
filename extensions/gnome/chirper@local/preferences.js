@@ -141,6 +141,7 @@ class ChirperPreferencesBuilder {
         this._audioRows = [];
         this._installedRows = [];
         this._downloadRows = [];
+        this._ollamaRows = [];
     }
 
     build() {
@@ -255,16 +256,44 @@ class ChirperPreferencesBuilder {
 
         const ollamaGroup = new Adw.PreferencesGroup({
             title: 'Ollama',
-            description: 'Local LLM formatting will use this area once the formatter backend is implemented.',
+            description: 'Use an installed Ollama model to polish dictated text after local rules run.',
         });
         page.add(ollamaGroup);
-        ollamaGroup.add(new Adw.ActionRow({
-            title: 'Model',
-            subtitle: 'Not connected yet',
-        }));
+        this._ollamaStatusRow = new Adw.ActionRow({
+            title: 'Formatter',
+            subtitle: 'Loading',
+        });
+        ollamaGroup.add(this._ollamaStatusRow);
+
+        const rulesRow = new Adw.ActionRow({
+            title: 'Rules Only',
+            subtitle: 'Fast local punctuation and symbol replacement.',
+        });
+        addButton(rulesRow, 'Use', () => this._selectFormatter('rules'));
+        ollamaGroup.add(rulesRow);
+
+        const noneRow = new Adw.ActionRow({
+            title: 'No Formatter',
+            subtitle: 'Copy Whisper output without cleanup.',
+        });
+        addButton(noneRow, 'Use', () => this._selectFormatter('none'));
+        ollamaGroup.add(noneRow);
+
+        const refreshOllamaRow = new Adw.ActionRow({
+            title: 'Refresh Ollama Models',
+            subtitle: 'Reload installed models from `ollama list`.',
+        });
+        addButton(refreshOllamaRow, 'Refresh', () => this._refreshOllama());
+        ollamaGroup.add(refreshOllamaRow);
+
+        this._ollamaModelsGroup = new Adw.PreferencesGroup({
+            title: 'Installed Ollama Models',
+        });
+        page.add(this._ollamaModelsGroup);
 
         this._refreshAudioInputs();
         this._refreshModels();
+        this._refreshOllama();
     }
 
     async _refreshAudioInputs() {
@@ -397,6 +426,76 @@ class ChirperPreferencesBuilder {
             await this._refreshModels();
         } catch (error) {
             this._currentModelRow.subtitle = error.message;
+        }
+    }
+
+    async _refreshOllama() {
+        this._ollamaStatusRow.subtitle = 'Loading';
+        this._clearRows(this._ollamaModelsGroup, this._ollamaRows);
+
+        try {
+            const output = await this._runCli(['ollama-list', '--json']);
+            const data = JSON.parse(output);
+            const formatter = data.formatter ?? 'rules';
+            const current = data.current?.model ?? 'unset';
+            const models = data.models ?? [];
+
+            this._ollamaStatusRow.subtitle = formatter === 'ollama'
+                ? `Ollama: ${current}`
+                : formatter;
+
+            if (!data.available) {
+                this._addInfoRow(
+                    this._ollamaModelsGroup,
+                    this._ollamaRows,
+                    data.error ?? 'Ollama unavailable'
+                );
+                return;
+            }
+
+            if (models.length === 0) {
+                this._addInfoRow(this._ollamaModelsGroup, this._ollamaRows, 'No Ollama models found');
+                return;
+            }
+
+            for (const model of models) {
+                const selected = formatter === 'ollama' && model.selected;
+                const row = new Adw.ActionRow({
+                    title: model.name,
+                    subtitle: selected ? 'Selected for LLM formatting' : 'Installed',
+                });
+                addButton(row, selected ? 'Selected' : 'Use', () => this._selectOllamaModel(model.name), {
+                    sensitive: !selected,
+                    suggested: !selected,
+                });
+                this._ollamaModelsGroup.add(row);
+                this._ollamaRows.push(row);
+            }
+        } catch (error) {
+            this._ollamaStatusRow.subtitle = 'Formatter controls unavailable';
+            this._addInfoRow(this._ollamaModelsGroup, this._ollamaRows, error.message);
+        }
+    }
+
+    async _selectFormatter(formatter) {
+        this._ollamaStatusRow.subtitle = `Selecting ${formatter}`;
+
+        try {
+            await this._runCli(['formatter-use', formatter]);
+            await this._refreshOllama();
+        } catch (error) {
+            this._ollamaStatusRow.subtitle = error.message;
+        }
+    }
+
+    async _selectOllamaModel(model) {
+        this._ollamaStatusRow.subtitle = `Selecting ${model}`;
+
+        try {
+            await this._runCli(['ollama-use', model]);
+            await this._refreshOllama();
+        } catch (error) {
+            this._ollamaStatusRow.subtitle = error.message;
         }
     }
 

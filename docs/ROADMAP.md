@@ -41,8 +41,8 @@ This file is the project checklist. Keep it updated as implementation choices be
 
 - [x] Add formatter contract implementation.
 - [x] Add deterministic spoken punctuation/symbol formatter.
-- [ ] Add Ollama formatter backend.
-- [ ] Add Ollama model menu once formatter backend exists.
+- [x] Add Ollama formatter backend.
+- [x] Add Ollama model menu once formatter backend exists.
 - [x] Add modes: auto, standard, email, command, code.
 - [ ] Add personal dictionary.
 - [ ] Add snippets.

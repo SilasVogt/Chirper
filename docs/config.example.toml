@@ -15,8 +15,9 @@ asr_backend = "whisper-cpp"
 # Start with "auto". On AMD, useful explicit values are "rocm" and "vulkan".
 gpu_backend = "auto"
 
-# Local rule formatting handles spoken punctuation and simple structure before
-# any future LLM formatter.
+# "rules" is fast local punctuation/symbol replacement. "ollama" first applies
+# those rules, then asks the selected local Ollama model to polish casing,
+# punctuation, spacing, and paragraph structure.
 formatter_backend = "rules"
 
 # Initial insertion backends will be "clipboard" and "uinput".
@@ -40,7 +41,7 @@ whispercpp_model_path = ""
 # Empty or "auto" lets whisper.cpp choose. Use "en", "de", etc. to force one.
 whisper_language = "auto"
 
-# Future local LLM formatting backend. These are not used until the Ollama
-# formatter backend lands, but settings UIs can already expose the selection.
+# Ollama is optional. Use `chirper ollama-list`, `chirper ollama-use <model>`,
+# and `chirper formatter-use ollama <model>` to select a local model.
 ollama_command = "ollama"
 ollama_model = "llama3.2"

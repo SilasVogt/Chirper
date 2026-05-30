@@ -299,6 +299,62 @@ impl ChirperConfig {
         })
     }
 
+    pub fn save_formatter_selection(
+        path: impl AsRef<Path>,
+        backend: FormatterBackend,
+        ollama_model: Option<&str>,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = if path.exists() {
+            let content = fs::read_to_string(path).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to read config file {}: {source}",
+                    path.display()
+                ))
+            })?;
+
+            content.parse::<toml::Table>().map_err(|source| {
+                ChirperError::Configuration(format!("failed to parse config TOML: {source}"))
+            })?
+        } else {
+            toml::Table::new()
+        };
+
+        table.insert(
+            "formatter_backend".to_string(),
+            toml::Value::String(backend.as_config_value().to_string()),
+        );
+
+        if let Some(model) = ollama_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            table.insert(
+                "ollama_model".to_string(),
+                toml::Value::String(model.to_string()),
+            );
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                ChirperError::Configuration(format!(
+                    "failed to create config directory {}: {source}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        let content = toml::to_string_pretty(&table).map_err(|source| {
+            ChirperError::Configuration(format!("failed to encode config TOML: {source}"))
+        })?;
+        fs::write(path, content).map_err(|source| {
+            ChirperError::Configuration(format!(
+                "failed to write config file {}: {source}",
+                path.display()
+            ))
+        })
+    }
+
     pub fn save_default_model_selection(
         model: &str,
         model_path: impl AsRef<Path>,
@@ -308,6 +364,13 @@ impl ChirperConfig {
 
     pub fn save_default_audio_target(target: Option<&str>) -> ChirperResult<()> {
         Self::save_audio_target(Self::default_path(), target)
+    }
+
+    pub fn save_default_formatter_selection(
+        backend: FormatterBackend,
+        ollama_model: Option<&str>,
+    ) -> ChirperResult<()> {
+        Self::save_formatter_selection(Self::default_path(), backend, ollama_model)
     }
 }
 
@@ -375,6 +438,17 @@ pub enum FormatterBackend {
     Rules,
     Ollama,
     LlamaCpp,
+}
+
+impl FormatterBackend {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Rules => "rules",
+            Self::Ollama => "ollama",
+            Self::LlamaCpp => "llama.cpp",
+        }
+    }
 }
 
 impl FromStr for FormatterBackend {
@@ -597,6 +671,45 @@ mod tests {
         let config = ChirperConfig::load_from_path(&path).unwrap();
 
         assert_eq!(config.pipewire_target, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_formatter_selection_updates_backend_and_ollama_model() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "formatter"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            ollama_model = "old-model"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_formatter_selection(
+            &path,
+            FormatterBackend::Ollama,
+            Some("llama3.2:latest"),
+        )
+        .unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.formatter_backend, FormatterBackend::Ollama);
+        assert_eq!(config.ollama_model, "llama3.2:latest");
+
+        ChirperConfig::save_formatter_selection(&path, FormatterBackend::Rules, None).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.formatter_backend, FormatterBackend::Rules);
+        assert_eq!(config.ollama_model, "llama3.2:latest");
 
         let _ = fs::remove_file(path);
     }

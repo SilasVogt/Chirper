@@ -33,6 +33,7 @@ dependencies = [
  "chirper-asr-whispercpp",
  "chirper-audio-pipewire",
  "chirper-core",
+ "chirper-formatter-ollama",
  "chirper-formatter-rules",
  "chirper-insertion-clipboard",
  "chirper-platform",
@@ -55,9 +56,17 @@ dependencies = [
  "chirper-asr-whispercpp",
  "chirper-audio-pipewire",
  "chirper-core",
+ "chirper-formatter-ollama",
  "chirper-formatter-rules",
  "chirper-insertion-clipboard",
  "serde_json",
+]
+
+[[package]]
+name = "chirper-formatter-ollama"
+version = "0.1.0"
+dependencies = [
+ "chirper-core",
 ]
 
 [[package]]

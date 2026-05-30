@@ -347,9 +347,13 @@ export default class ChirperExtension extends Extension {
                 this._refreshModelMenu();
         });
 
-        this._ollamaMenu = new PopupMenu.PopupSubMenuMenuItem('Ollama Model');
+        this._ollamaMenu = new PopupMenu.PopupSubMenuMenuItem('Formatter');
         this._indicator.menu.addMenuItem(this._ollamaMenu);
-        this._ollamaMenu.menu.addMenuItem(this._disabledItem('Formatter backend not implemented yet'));
+        this._ollamaMenu.menu.addMenuItem(this._disabledItem('Loading formatter'));
+        this._ollamaMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._refreshOllamaMenu();
+        });
 
         this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -381,6 +385,7 @@ export default class ChirperExtension extends Extension {
         this._syncPrimaryAction();
         this._refreshAudioMenu();
         this._refreshModelMenu();
+        this._refreshOllamaMenu();
     }
 
     _buildOverlay() {
@@ -711,6 +716,100 @@ export default class ChirperExtension extends Extension {
             await this._refreshModelMenu();
         } catch (error) {
             Main.notify('Chirper', `Failed to download model: ${error.message}`);
+        }
+    }
+
+    async _refreshOllamaMenu() {
+        if (!this._ollamaMenu)
+            return;
+
+        this._ollamaMenu.menu.removeAll();
+
+        try {
+            const output = await this._runCli(['ollama-list', '--json']);
+            const data = JSON.parse(output);
+            const formatter = data.formatter ?? 'rules';
+            const current = data.current?.model ?? 'unset';
+            const models = data.models ?? [];
+
+            this._ollamaMenu.label.text = formatter === 'ollama'
+                ? `Ollama: ${shortLabel(current, MENU_STATUS_LABEL_MAX)}`
+                : `Formatter: ${formatter}`;
+            this._ollamaMenu.menu.addMenuItem(
+                this._disabledItem(`Current: ${formatter === 'ollama' ? current : formatter}`)
+            );
+            this._ollamaMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            const rulesItem = new PopupMenu.PopupMenuItem(
+                formatter === 'rules' ? '✓ Rules only' : 'Rules only'
+            );
+            rulesItem.connect('activate', () => {
+                this._selectFormatter('rules');
+            });
+            this._ollamaMenu.menu.addMenuItem(rulesItem);
+
+            const noneItem = new PopupMenu.PopupMenuItem(
+                formatter === 'none' ? '✓ No formatter' : 'No formatter'
+            );
+            noneItem.connect('activate', () => {
+                this._selectFormatter('none');
+            });
+            this._ollamaMenu.menu.addMenuItem(noneItem);
+
+            this._ollamaMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            if (!data.available) {
+                this._ollamaMenu.menu.addMenuItem(this._disabledItem('Ollama unavailable'));
+                if (data.error)
+                    this._ollamaMenu.menu.addMenuItem(
+                        this._disabledItem(shortLabel(data.error, MENU_ITEM_LABEL_MAX))
+                    );
+                return;
+            }
+
+            if (models.length === 0) {
+                this._ollamaMenu.menu.addMenuItem(this._disabledItem('No Ollama models found'));
+                this._ollamaMenu.menu.addMenuItem(this._disabledItem('Run: ollama pull llama3.2'));
+                return;
+            }
+
+            this._ollamaMenu.menu.addMenuItem(this._disabledItem('Ollama models'));
+
+            for (const model of models) {
+                const active = formatter === 'ollama' && model.selected;
+                const label = active ? `✓ ${model.name}` : model.name;
+                const item = new PopupMenu.PopupMenuItem(shortLabel(label, MENU_ITEM_LABEL_MAX));
+                item.connect('activate', () => {
+                    this._selectOllamaModel(model.name);
+                });
+                this._ollamaMenu.menu.addMenuItem(item);
+            }
+        } catch (error) {
+            this._ollamaMenu.label.text = 'Formatter';
+            this._ollamaMenu.menu.addMenuItem(this._disabledItem('Formatter controls unavailable'));
+            this._ollamaMenu.menu.addMenuItem(
+                this._disabledItem(shortLabel(error.message, MENU_ITEM_LABEL_MAX))
+            );
+        }
+    }
+
+    async _selectFormatter(formatter) {
+        try {
+            await this._runCli(['formatter-use', formatter]);
+            Main.notify('Chirper', `Selected formatter: ${formatter}`);
+            await this._refreshOllamaMenu();
+        } catch (error) {
+            Main.notify('Chirper', `Failed to select formatter: ${error.message}`);
+        }
+    }
+
+    async _selectOllamaModel(model) {
+        try {
+            await this._runCli(['ollama-use', model]);
+            Main.notify('Chirper', `Selected Ollama model: ${model}`);
+            await this._refreshOllamaMenu();
+        } catch (error) {
+            Main.notify('Chirper', `Failed to select Ollama model: ${error.message}`);
         }
     }
 

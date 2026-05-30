@@ -13,6 +13,7 @@ use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, DictationMode, Formatter, FormatterBackend,
     ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
+use chirper_formatter_ollama::{list_ollama_models, OllamaFormatter, OllamaModel, OllamaOptions};
 use chirper_formatter_rules::RuleFormatter;
 use chirper_insertion_clipboard::ClipboardInserter;
 use chirper_platform::{PlatformDiagnostics, RuntimeDiagnostics};
@@ -78,6 +79,26 @@ fn main() {
 
     if matches!(first.as_deref(), Some("audio-use")) {
         audio_use(args.next());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("formatter-current")) {
+        formatter_current(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("formatter-use")) {
+        formatter_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ollama-list")) {
+        ollama_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ollama-use")) {
+        ollama_use(args.collect());
         return;
     }
 
@@ -636,6 +657,190 @@ fn audio_use(selection: Option<String>) {
     println!("target: {}", node.name);
 }
 
+fn formatter_current(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+
+    if json {
+        let value = serde_json::json!({
+            "backend": config.formatter_backend.as_config_value(),
+            "ollama_model": config.ollama_model,
+            "ollama_command": config.ollama_command,
+        });
+
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("backend: {}", config.formatter_backend.as_config_value());
+    println!("ollama_command: {}", config.ollama_command);
+    println!("ollama_model: {}", config.ollama_model);
+}
+
+fn formatter_use(args: Vec<String>) {
+    let Some(selection) = args.first() else {
+        eprintln!("usage: chirper formatter-use <none|rules|ollama> [ollama-model]");
+        std::process::exit(1);
+    };
+
+    let backend = match selection.parse::<FormatterBackend>() {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let model = args.get(1).map(String::as_str);
+
+    if backend == FormatterBackend::Ollama {
+        let config = load_config_or_exit();
+        let selected_model = model.unwrap_or(&config.ollama_model);
+        if let Err(error) = ensure_ollama_model_available(&config.ollama_command, selected_model) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+
+    if let Err(error) = ChirperConfig::save_default_formatter_selection(backend, model) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected formatter: {}", backend.as_config_value());
+    if let Some(model) = model {
+        println!("ollama_model: {model}");
+    }
+    println!("the daemon will use this for the next transcription");
+}
+
+fn ollama_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+
+    match list_ollama_models(&config.ollama_command) {
+        Ok(models) => {
+            if json {
+                let value = ollama_status_json(&config, true, None, &models);
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                return;
+            }
+
+            println!("formatter: {}", config.formatter_backend.as_config_value());
+            println!("ollama_command: {}", config.ollama_command);
+            println!("current_model: {}", config.ollama_model);
+            println!();
+            println!("installed Ollama models:");
+            if models.is_empty() {
+                println!("  none");
+            } else {
+                for model in models {
+                    let marker = if model.name == config.ollama_model {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!(" {marker} {}", model.name);
+                }
+            }
+        }
+        Err(error) => {
+            if json {
+                let value = ollama_status_json(&config, false, Some(error.to_string()), &[]);
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                return;
+            }
+
+            eprintln!("{error}");
+            eprintln!("install Ollama or set `ollama_command` in ~/.config/chirper/config.toml");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn ollama_use(args: Vec<String>) {
+    let mut model = None;
+    let mut enable = true;
+
+    for arg in args {
+        match arg.as_str() {
+            "--no-enable" => enable = false,
+            "--enable" => enable = true,
+            _ if model.is_none() => model = Some(arg),
+            _ => {
+                eprintln!("usage: chirper ollama-use <model> [--enable|--no-enable]");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let Some(model) = model else {
+        eprintln!("usage: chirper ollama-use <model> [--enable|--no-enable]");
+        std::process::exit(1);
+    };
+    let config = load_config_or_exit();
+
+    if let Err(error) = ensure_ollama_model_available(&config.ollama_command, &model) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    let backend = if enable {
+        FormatterBackend::Ollama
+    } else {
+        config.formatter_backend
+    };
+
+    if let Err(error) = ChirperConfig::save_default_formatter_selection(backend, Some(&model)) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected Ollama model: {model}");
+    println!("formatter: {}", backend.as_config_value());
+    println!("the daemon will use this for the next transcription");
+}
+
+fn ensure_ollama_model_available(command: &str, selected_model: &str) -> Result<(), String> {
+    let models = list_ollama_models(command).map_err(|error| error.to_string())?;
+
+    if models.iter().any(|model| model.name == selected_model) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Ollama model `{selected_model}` is not installed; run `ollama pull {selected_model}` or choose one from `chirper ollama-list`"
+    ))
+}
+
+fn ollama_status_json(
+    config: &ChirperConfig,
+    available: bool,
+    error: Option<String>,
+    models: &[OllamaModel],
+) -> serde_json::Value {
+    let models_json = models
+        .iter()
+        .map(|model| {
+            serde_json::json!({
+                "name": model.name,
+                "selected": model.name == config.ollama_model,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "available": available,
+        "error": error,
+        "formatter": config.formatter_backend.as_config_value(),
+        "command": config.ollama_command,
+        "current": {
+            "model": config.ollama_model,
+            "selected_installed": models.iter().any(|model| model.name == config.ollama_model),
+        },
+        "models": models_json,
+    })
+}
+
 fn daemon_start_screen() {
     let nodes = match pipewire_audio_nodes() {
         Ok(nodes) => nodes,
@@ -1111,30 +1316,52 @@ fn parse_mode_name(value: &str) -> Option<DictationMode> {
 
 fn format_text(text: &str, mode: DictationMode) -> String {
     let config = load_config_or_exit();
+    let transcript = chirper_core::Transcript {
+        text: text.to_string(),
+        language: None,
+    };
 
-    match config.formatter_backend {
-        FormatterBackend::None => text.to_string(),
-        FormatterBackend::Rules => {
-            let transcript = chirper_core::Transcript {
-                text: text.to_string(),
-                language: None,
-            };
-            match RuleFormatter.format(&transcript, mode) {
-                Ok(text) => text,
-                Err(error) => {
-                    eprintln!("{error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        FormatterBackend::Ollama | FormatterBackend::LlamaCpp => {
-            eprintln!(
-                "formatter backend {:?} is not implemented yet; using raw transcript",
-                config.formatter_backend
-            );
-            text.to_string()
+    match format_transcript_with_config(&config, &transcript, mode) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
         }
     }
+}
+
+fn format_transcript_with_config(
+    config: &ChirperConfig,
+    transcript: &chirper_core::Transcript,
+    mode: DictationMode,
+) -> Result<String, String> {
+    match config.formatter_backend {
+        FormatterBackend::None => Ok(transcript.text.clone()),
+        FormatterBackend::Rules => format_with_rules(transcript, mode),
+        FormatterBackend::Ollama => {
+            let preformatted = format_with_rules(transcript, mode)?;
+            let transcript = chirper_core::Transcript {
+                text: preformatted,
+                language: transcript.language.clone(),
+            };
+            OllamaFormatter::new(OllamaOptions::from_config(config))
+                .format(&transcript, mode)
+                .map_err(|error| error.to_string())
+        }
+        FormatterBackend::LlamaCpp => {
+            eprintln!("formatter backend llama.cpp is not implemented yet; using raw transcript");
+            Ok(transcript.text.clone())
+        }
+    }
+}
+
+fn format_with_rules(
+    transcript: &chirper_core::Transcript,
+    mode: DictationMode,
+) -> Result<String, String> {
+    RuleFormatter
+        .format(transcript, mode)
+        .map_err(|error| error.to_string())
 }
 
 fn transcribe_audio(audio: chirper_core::CapturedAudio) -> chirper_core::Transcript {

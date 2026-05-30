@@ -14,6 +14,7 @@ use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, Formatter, FormatterBackend, TextInserter, Transcript,
     WorkflowState,
 };
+use chirper_formatter_ollama::{OllamaFormatter, OllamaOptions};
 use chirper_formatter_rules::RuleFormatter;
 use chirper_insertion_clipboard::ClipboardInserter;
 
@@ -355,10 +356,18 @@ fn transcribe_audio(
 fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<String, String> {
     match config.formatter_backend {
         FormatterBackend::None => Ok(transcript.text.clone()),
-        FormatterBackend::Rules => RuleFormatter
-            .format(transcript, config.dictation_mode)
-            .map_err(|error| error.to_string()),
-        FormatterBackend::Ollama | FormatterBackend::LlamaCpp => {
+        FormatterBackend::Rules => format_with_rules(config, transcript),
+        FormatterBackend::Ollama => {
+            let preformatted = format_with_rules(config, transcript)?;
+            let transcript = Transcript {
+                text: preformatted,
+                language: transcript.language.clone(),
+            };
+            OllamaFormatter::new(OllamaOptions::from_config(config))
+                .format(&transcript, config.dictation_mode)
+                .map_err(|error| error.to_string())
+        }
+        FormatterBackend::LlamaCpp => {
             eprintln!(
                 "formatter backend {:?} is not implemented yet; using raw transcript",
                 config.formatter_backend
@@ -366,6 +375,12 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
             Ok(transcript.text.clone())
         }
     }
+}
+
+fn format_with_rules(config: &ChirperConfig, transcript: &Transcript) -> Result<String, String> {
+    RuleFormatter
+        .format(transcript, config.dictation_mode)
+        .map_err(|error| error.to_string())
 }
 
 fn copy_text(text: &str) -> Result<(), String> {

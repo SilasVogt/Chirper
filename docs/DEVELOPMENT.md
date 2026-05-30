@@ -59,6 +59,19 @@ cargo run -p chirper-cli -- model-download small --select
 cargo run -p chirper-cli -- model-use base
 ```
 
+To inspect and select Ollama formatting models:
+
+```sh
+cargo run -p chirper-cli -- ollama-list
+cargo run -p chirper-cli -- ollama-use llama3.2
+cargo run -p chirper-cli -- formatter-use rules
+cargo run -p chirper-cli -- formatter-use ollama llama3.2
+```
+
+`ollama-use` selects the model and enables the Ollama formatter by default.
+Use `--no-enable` to update `ollama_model` while keeping the current formatter
+backend.
+
 To smoke-test the first end-to-end local loop:
 
 ```sh
