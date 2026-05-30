@@ -4,16 +4,18 @@ set -euo pipefail
 backend="auto"
 model="base"
 prefix="${XDG_DATA_HOME:-$HOME/.local/share}/chirper"
+write_config=false
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/setup-whispercpp.sh [--backend auto|cpu|vulkan|rocm] [--model MODEL] [--prefix PATH]
+Usage: scripts/setup-whispercpp.sh [--backend auto|cpu|vulkan|rocm] [--model MODEL] [--prefix PATH] [--write-config]
 
 Builds whisper.cpp locally and downloads a ggml model for Chirper.
 
 Examples:
   scripts/setup-whispercpp.sh --backend vulkan --model base
   scripts/setup-whispercpp.sh --backend rocm --model small
+  scripts/setup-whispercpp.sh --backend auto --model base --write-config
 
 Common models:
   base, small, medium, large-v3, large-v3-turbo
@@ -36,6 +38,10 @@ while [ "$#" -gt 0 ]; do
     --prefix)
       prefix="${2:?missing value for --prefix}"
       shift 2
+      ;;
+    --write-config)
+      write_config=true
+      shift
       ;;
     -h|--help)
       usage
@@ -174,6 +180,46 @@ cmake --build "$build_dir" -j --config Release
 
 if [ ! -f "$model_path" ]; then
   "$src_dir/models/download-ggml-model.sh" "$model" "$model_dir"
+fi
+
+write_default_config() {
+  config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/chirper"
+  config_path="$config_dir/config.toml"
+
+  mkdir -p "$config_dir"
+
+  if [ -f "$config_path" ]; then
+    echo
+    echo "Config already exists at $config_path; leaving it unchanged."
+    echo "Add or update the snippet below if these whisper.cpp paths changed."
+    return
+  fi
+
+  cat > "$config_path" <<CONFIG
+audio_backend = "pipewire"
+asr_backend = "whisper-cpp"
+gpu_backend = "$backend"
+formatter_backend = "rules"
+insertion_backend = "clipboard"
+dictation_mode = "auto"
+
+whisper_model = "$model"
+whispercpp_command = "$build_dir/bin/whisper-cli"
+whispercpp_model_path = "$model_path"
+whisper_language = "auto"
+
+ollama_command = "ollama"
+ollama_model = "llama3.2"
+
+[vocabulary]
+CONFIG
+
+  echo
+  echo "Wrote Chirper config to $config_path"
+}
+
+if [ "$write_config" = true ]; then
+  write_default_config
 fi
 
 cat <<CONFIG

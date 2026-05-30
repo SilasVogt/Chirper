@@ -5,9 +5,33 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 service_name="chirper-daemon.service"
 service_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 service_path="$service_dir/$service_name"
-daemon_bin="$repo_root/target/debug/chirper-daemon"
+build_profile="${CHIRPER_BUILD_PROFILE:-debug}"
 
-cargo build -p chirper-daemon
+case "$build_profile" in
+  debug)
+    target_dir="debug"
+    cargo_args=(build -p chirper-daemon)
+    ;;
+  release)
+    target_dir="release"
+    cargo_args=(build --release -p chirper-daemon)
+    ;;
+  *)
+    echo "unsupported CHIRPER_BUILD_PROFILE: $build_profile" >&2
+    exit 2
+    ;;
+esac
+
+daemon_bin="$repo_root/target/$target_dir/chirper-daemon"
+
+if [ "${CHIRPER_SKIP_BUILD:-0}" != "1" ]; then
+  cargo "${cargo_args[@]}"
+fi
+
+if [ ! -x "$daemon_bin" ]; then
+  echo "daemon binary not found or not executable: $daemon_bin" >&2
+  exit 1
+fi
 
 mkdir -p "$service_dir"
 

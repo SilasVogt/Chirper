@@ -165,7 +165,7 @@ On Wayland, log out and back in after first install or changing extension code.
 To build whisper.cpp locally after installing CMake:
 
 ```sh
-scripts/setup-whispercpp.sh --backend vulkan --model base
+scripts/setup-whispercpp.sh --backend vulkan --model base --write-config
 ```
 
 ## First Implementation Target

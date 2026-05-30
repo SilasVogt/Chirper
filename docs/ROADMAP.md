@@ -61,6 +61,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 ## Milestone 5: Other Frontends
 
 - [x] Document frontend API.
+- [x] Add public install guide and one-line bootstrap script.
 - [ ] Add KDE/Qt frontend notes.
 - [ ] Add status/widget examples for window managers.
 - [ ] Add packaging guide.

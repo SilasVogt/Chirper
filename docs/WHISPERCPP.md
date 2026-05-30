@@ -28,7 +28,7 @@ sudo pacman -S cmake vulkan-headers shaderc glslang spirv-headers
 After installing CMake, run:
 
 ```sh
-scripts/setup-whispercpp.sh --backend vulkan --model base
+scripts/setup-whispercpp.sh --backend vulkan --model base --write-config
 ```
 
 To download and switch to a larger model later:
@@ -44,7 +44,7 @@ the next transcription without restarting the service.
 For ROCm/HIP later:
 
 ```sh
-scripts/setup-whispercpp.sh --backend rocm --model base
+scripts/setup-whispercpp.sh --backend rocm --model base --write-config
 ```
 
 The script builds whisper.cpp under:
@@ -60,6 +60,8 @@ and downloads models under:
 ```
 
 It prints the config snippet to add to `~/.config/chirper/config.toml`.
+With `--write-config`, it writes a starter config only when the config file does
+not already exist.
 
 ## Model Selection
 
