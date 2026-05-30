@@ -756,6 +756,14 @@ export default class ChirperExtension extends Extension {
             });
             this._ollamaMenu.menu.addMenuItem(noneItem);
 
+            const codexItem = new PopupMenu.PopupMenuItem(
+                formatter === 'codex' ? '✓ Codex CLI' : 'Codex CLI'
+            );
+            codexItem.connect('activate', () => {
+                this._selectFormatter('codex');
+            });
+            this._ollamaMenu.menu.addMenuItem(codexItem);
+
             this._ollamaMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             if (!data.available) {

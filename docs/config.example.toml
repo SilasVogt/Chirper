@@ -16,8 +16,8 @@ asr_backend = "whisper-cpp"
 gpu_backend = "auto"
 
 # "rules" is fast local punctuation/symbol replacement plus vocabulary,
-# edit commands, and conservative domain/email cleanup. "ollama" first applies
-# those rules, then asks the selected local Ollama model to polish casing,
+# edit commands, and conservative domain/email cleanup. "ollama" and "codex"
+# first apply those rules, then ask the selected model/tool to polish casing,
 # punctuation, spacing, and paragraph structure using the raw transcript as
 # additional context.
 formatter_backend = "rules"
@@ -48,8 +48,29 @@ whisper_language = "auto"
 ollama_command = "ollama"
 ollama_model = "llama3.2"
 
+# Codex CLI is optional. It uses your installed `codex` auth/config and runs
+# `codex exec` in read-only, no-approval, ephemeral mode.
+codex_command = "codex"
+codex_model = ""
+codex_profile = ""
+codex_reasoning_effort = ""
+codex_service_tier = ""
+codex_config_overrides = []
+
+# Named Codex comparison profiles for `chirper format-compare --codex-profile fast`.
+[codex_profiles.fast]
+model = "gpt-5.5"
+reasoning_effort = "low"
+service_tier = "priority"
+
+[codex_profiles.extra_high]
+model = "gpt-5.5"
+reasoning_effort = "xhigh"
+service_tier = "priority"
+config_overrides = ["model_verbosity=\"low\""]
+
 # Learned and manually configured preferred spellings. The rules preprocessor
-# applies these before the optional Ollama proofreader sees the text.
+# applies these before the optional LLM proofreader sees the text.
 [vocabulary]
 "silas on linux" = "SilasOnLinux"
 "prepped" = "Prepd"

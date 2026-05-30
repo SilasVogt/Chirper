@@ -304,6 +304,13 @@ class ChirperPreferencesBuilder {
         addButton(noneRow, 'Use', () => this._selectFormatter('none'));
         ollamaGroup.add(noneRow);
 
+        const codexRow = new Adw.ActionRow({
+            title: 'Codex CLI',
+            subtitle: 'Use `codex exec` for proofreading after local rules run.',
+        });
+        addButton(codexRow, 'Use', () => this._selectFormatter('codex'));
+        ollamaGroup.add(codexRow);
+
         const refreshOllamaRow = new Adw.ActionRow({
             title: 'Refresh Ollama Models',
             subtitle: 'Reload installed models from `ollama list`.',

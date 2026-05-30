@@ -78,7 +78,7 @@ The first implementation can be direct and in-process. A later external plugin A
 | Audio | PipeWire | file input for tests |
 | ASR | whisper.cpp | faster-whisper, remote API adapters |
 | GPU | ROCm/Vulkan/CPU selection | CUDA, OpenVINO |
-| Formatting | none, rules, vocabulary, Ollama | llama.cpp |
+| Formatting | none, rules, vocabulary, Ollama, Codex CLI | llama.cpp |
 | Insertion | clipboard, uinput | IBus, X11, wlroots-specific |
 | GNOME UI | CLI first, extension second | GTK settings app |
 

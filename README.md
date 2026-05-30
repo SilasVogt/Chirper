@@ -13,6 +13,7 @@ This repo is early but usable for local testing on Linux. The current path is:
 - selectable transcription language for whisper.cpp
 - local rules formatting with preferred spellings
 - optional Ollama proofreading
+- optional Codex CLI proofreading
 - clipboard insertion
 - daemon API for frontends
 - GNOME Shell 50 extension with recording controls, overlay, model selection,
@@ -79,6 +80,7 @@ crates/chirper-core     shared state, config, errors, backend contracts
 crates/chirper-api      shared local API request/response types
 crates/chirper-daemon   background service and local API server
 crates/chirper-cli      command-line control/debug client
+crates/chirper-formatter-*  formatter backends
 extensions/gnome        GNOME Shell extension frontend
 ```
 

@@ -80,6 +80,22 @@ cargo run -p chirper-cli -- formatter-use ollama llama3.2
 Use `--no-enable` to update `ollama_model` while keeping the current formatter
 backend.
 
+To inspect and select Codex CLI formatting:
+
+```sh
+cargo run -p chirper-cli -- codex-current
+cargo run -p chirper-cli -- codex-list
+cargo run -p chirper-cli -- codex-use gpt-5.5 --effort low --fast
+cargo run -p chirper-cli -- formatter-use codex
+```
+
+Codex formatting calls `codex exec` non-interactively with a read-only sandbox,
+no approvals, an ephemeral session, and `--output-last-message`. It uses the
+installed Codex auth/config. `codex-use` writes Chirper's top-level Codex
+settings; named comparison profiles live under `[codex_profiles.<name>]` in the
+config file. `--fast` stores Codex's `priority` service tier, which the Codex UI
+labels as Fast.
+
 The Ollama formatter always runs after the rules preprocessor. Its prompt
 includes the raw transcript plus the preprocessed draft; the draft is treated as
 authoritative so local edit commands, preferred spellings, and deterministic
@@ -93,6 +109,8 @@ cargo run -p chirper-cli -- format-compare "hello comma world"
 cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-input raw "hello comma world"
 cargo run -p chirper-cli -- format-compare --no-preprocessor "hello comma world"
+cargo run -p chirper-cli -- format-compare --no-ollama --codex "hello comma world"
+cargo run -p chirper-cli -- format-compare --no-ollama --codex-profile fast "hello comma world"
 cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma world"
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
 ```

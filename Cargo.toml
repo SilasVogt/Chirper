@@ -6,6 +6,7 @@ members = [
     "crates/chirper-cli",
     "crates/chirper-core",
     "crates/chirper-daemon",
+    "crates/chirper-formatter-codex",
     "crates/chirper-formatter-ollama",
     "crates/chirper-formatter-rules",
     "crates/chirper-insertion-clipboard",

@@ -54,6 +54,13 @@ pub struct ChirperConfig {
     pub whisper_language: Option<String>,
     pub ollama_command: String,
     pub ollama_model: String,
+    pub codex_command: String,
+    pub codex_model: Option<String>,
+    pub codex_profile: Option<String>,
+    pub codex_reasoning_effort: Option<String>,
+    pub codex_service_tier: Option<String>,
+    pub codex_config_overrides: Vec<String>,
+    pub codex_profiles: Vec<CodexProfileConfig>,
     pub vocabulary: Vec<VocabularyEntry>,
 }
 
@@ -73,6 +80,13 @@ impl Default for ChirperConfig {
             whisper_language: None,
             ollama_command: "ollama".to_string(),
             ollama_model: "llama3.2".to_string(),
+            codex_command: "codex".to_string(),
+            codex_model: None,
+            codex_profile: None,
+            codex_reasoning_effort: None,
+            codex_service_tier: None,
+            codex_config_overrides: Vec::new(),
+            codex_profiles: Vec::new(),
             vocabulary: Vec::new(),
         }
     }
@@ -158,6 +172,37 @@ impl ChirperConfig {
 
         if let Some(value) = table.get("ollama_model") {
             config.ollama_model = parse_string("ollama_model", value)?.to_string();
+        }
+
+        if let Some(value) = table.get("codex_command") {
+            config.codex_command = parse_string("codex_command", value)?.to_string();
+        }
+
+        if let Some(value) = table.get("codex_model") {
+            config.codex_model = parse_optional_string("codex_model", value)?;
+        }
+
+        if let Some(value) = table.get("codex_profile") {
+            config.codex_profile = parse_optional_string("codex_profile", value)?;
+        }
+
+        if let Some(value) = table.get("codex_reasoning_effort") {
+            config.codex_reasoning_effort = parse_optional_string("codex_reasoning_effort", value)?;
+        }
+
+        if let Some(value) = table.get("codex_service_tier") {
+            config.codex_service_tier = parse_optional_string("codex_service_tier", value)?;
+        }
+
+        if let Some(value) = table
+            .get("codex_config_overrides")
+            .or_else(|| table.get("codex_config"))
+        {
+            config.codex_config_overrides = parse_string_array("codex_config_overrides", value)?;
+        }
+
+        if let Some(value) = table.get("codex_profiles") {
+            config.codex_profiles = parse_codex_profiles(value)?;
         }
 
         if let Some(value) = table.get("vocabulary") {
@@ -379,6 +424,47 @@ impl ChirperConfig {
         write_config_table(path, &table)
     }
 
+    pub fn save_codex_selection(
+        path: impl AsRef<Path>,
+        model: Option<&str>,
+        profile: Option<&str>,
+        reasoning_effort: Option<&str>,
+        service_tier: Option<&str>,
+        config_overrides: &[String],
+        enable: bool,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+
+        set_optional_string(&mut table, "codex_model", model);
+        set_optional_string(&mut table, "codex_profile", profile);
+        set_optional_string(&mut table, "codex_reasoning_effort", reasoning_effort);
+        set_optional_string(&mut table, "codex_service_tier", service_tier);
+
+        if config_overrides.is_empty() {
+            table.remove("codex_config_overrides");
+        } else {
+            table.insert(
+                "codex_config_overrides".to_string(),
+                toml::Value::Array(
+                    config_overrides
+                        .iter()
+                        .map(|value| toml::Value::String(value.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+
+        if enable {
+            table.insert(
+                "formatter_backend".to_string(),
+                toml::Value::String(FormatterBackend::Codex.as_config_value().to_string()),
+            );
+        }
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_vocabulary_entry(
         path: impl AsRef<Path>,
         spoken: &str,
@@ -451,6 +537,25 @@ impl ChirperConfig {
         Self::save_language_selection(Self::default_path(), language)
     }
 
+    pub fn save_default_codex_selection(
+        model: Option<&str>,
+        profile: Option<&str>,
+        reasoning_effort: Option<&str>,
+        service_tier: Option<&str>,
+        config_overrides: &[String],
+        enable: bool,
+    ) -> ChirperResult<()> {
+        Self::save_codex_selection(
+            Self::default_path(),
+            model,
+            profile,
+            reasoning_effort,
+            service_tier,
+            config_overrides,
+            enable,
+        )
+    }
+
     pub fn save_default_vocabulary_entry(spoken: &str, written: &str) -> ChirperResult<()> {
         Self::save_vocabulary_entry(Self::default_path(), spoken, written)
     }
@@ -464,6 +569,16 @@ impl ChirperConfig {
 pub struct VocabularyEntry {
     pub spoken: String,
     pub written: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexProfileConfig {
+    pub name: String,
+    pub model: Option<String>,
+    pub profile: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
+    pub config_overrides: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,6 +644,7 @@ pub enum FormatterBackend {
     None,
     Rules,
     Ollama,
+    Codex,
     LlamaCpp,
 }
 
@@ -538,6 +654,7 @@ impl FormatterBackend {
             Self::None => "none",
             Self::Rules => "rules",
             Self::Ollama => "ollama",
+            Self::Codex => "codex",
             Self::LlamaCpp => "llama.cpp",
         }
     }
@@ -551,6 +668,7 @@ impl FromStr for FormatterBackend {
             "none" | "disabled" | "off" => Ok(Self::None),
             "rules" | "rulebased" | "localrules" => Ok(Self::Rules),
             "ollama" => Ok(Self::Ollama),
+            "codex" | "codexcli" | "openai" => Ok(Self::Codex),
             "llamacpp" => Ok(Self::LlamaCpp),
             _ => Err(unknown_value("formatter_backend", value)),
         }
@@ -647,6 +765,83 @@ fn parse_vocabulary(value: &toml::Value) -> ChirperResult<Vec<VocabularyEntry>> 
     Ok(entries)
 }
 
+fn parse_string_array(key: &str, value: &toml::Value) -> ChirperResult<Vec<String>> {
+    let values = value.as_array().ok_or_else(|| {
+        ChirperError::Configuration(format!("config key `{key}` must be an array of strings"))
+    })?;
+
+    values
+        .iter()
+        .map(|value| Ok(parse_string(key, value)?.trim().to_string()))
+        .filter(|value| {
+            value
+                .as_ref()
+                .map(|value| !value.is_empty())
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+fn parse_codex_profiles(value: &toml::Value) -> ChirperResult<Vec<CodexProfileConfig>> {
+    let table = value.as_table().ok_or_else(|| {
+        ChirperError::Configuration("config key `codex_profiles` must be a table".to_string())
+    })?;
+    let mut profiles = Vec::new();
+
+    for (name, value) in table {
+        let profile_table = value.as_table().ok_or_else(|| {
+            ChirperError::Configuration(format!("codex profile `{name}` must be a table"))
+        })?;
+        let config_overrides = profile_table
+            .get("config_overrides")
+            .or_else(|| profile_table.get("config"))
+            .map(|value| parse_string_array("codex_profiles.config_overrides", value))
+            .transpose()?
+            .unwrap_or_default();
+
+        profiles.push(CodexProfileConfig {
+            name: name.to_string(),
+            model: profile_table
+                .get("model")
+                .map(|value| parse_optional_string("codex_profiles.model", value))
+                .transpose()?
+                .flatten(),
+            profile: profile_table
+                .get("profile")
+                .map(|value| parse_optional_string("codex_profiles.profile", value))
+                .transpose()?
+                .flatten(),
+            reasoning_effort: profile_table
+                .get("reasoning_effort")
+                .or_else(|| profile_table.get("effort"))
+                .map(|value| parse_optional_string("codex_profiles.reasoning_effort", value))
+                .transpose()?
+                .flatten(),
+            service_tier: profile_table
+                .get("service_tier")
+                .or_else(|| profile_table.get("tier"))
+                .map(|value| parse_optional_string("codex_profiles.service_tier", value))
+                .transpose()?
+                .flatten(),
+            config_overrides,
+        });
+    }
+
+    profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(profiles)
+}
+
+fn set_optional_string(table: &mut toml::Table, key: &str, value: Option<&str>) {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
 fn read_config_table(path: &Path) -> ChirperResult<toml::Table> {
     if path.exists() {
         let content = fs::read_to_string(path).map_err(|source| {
@@ -740,6 +935,17 @@ mod tests {
             whisper_language = "en"
             ollama_command = "/usr/bin/ollama"
             ollama_model = "llama3.1:8b"
+            codex_command = "/usr/bin/codex"
+            codex_model = "gpt-5.5"
+            codex_profile = "work"
+            codex_reasoning_effort = "xhigh"
+            codex_service_tier = "fast"
+            codex_config_overrides = ["model_verbosity=\"low\""]
+
+            [codex_profiles.quick]
+            model = "gpt-5.4-mini"
+            reasoning_effort = "low"
+            service_tier = "fast"
             "#,
         )
         .unwrap();
@@ -761,6 +967,17 @@ mod tests {
         assert_eq!(config.whisper_language, Some("en".to_string()));
         assert_eq!(config.ollama_command, "/usr/bin/ollama");
         assert_eq!(config.ollama_model, "llama3.1:8b");
+        assert_eq!(config.codex_command, "/usr/bin/codex");
+        assert_eq!(config.codex_model, Some("gpt-5.5".to_string()));
+        assert_eq!(config.codex_profile, Some("work".to_string()));
+        assert_eq!(config.codex_reasoning_effort, Some("xhigh".to_string()));
+        assert_eq!(config.codex_service_tier, Some("fast".to_string()));
+        assert_eq!(
+            config.codex_config_overrides,
+            vec!["model_verbosity=\"low\""]
+        );
+        assert_eq!(config.codex_profiles.len(), 1);
+        assert_eq!(config.codex_profiles[0].name, "quick");
     }
 
     #[test]
@@ -933,6 +1150,53 @@ mod tests {
         let config = ChirperConfig::load_from_path(&path).unwrap();
 
         assert_eq!(config.whisper_language, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_codex_selection_updates_only_codex_fields() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "codex"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+        let overrides = vec!["model_verbosity=\"low\"".to_string()];
+
+        ChirperConfig::save_codex_selection(
+            &path,
+            Some("gpt-5.5"),
+            None,
+            Some("low"),
+            Some("fast"),
+            &overrides,
+            true,
+        )
+        .unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.formatter_backend, FormatterBackend::Codex);
+        assert_eq!(config.codex_model, Some("gpt-5.5".to_string()));
+        assert_eq!(config.codex_reasoning_effort, Some("low".to_string()));
+        assert_eq!(config.codex_service_tier, Some("fast".to_string()));
+        assert_eq!(config.codex_config_overrides, overrides);
+
+        ChirperConfig::save_codex_selection(&path, None, None, None, None, &[], false).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.formatter_backend, FormatterBackend::Codex);
+        assert_eq!(config.codex_model, None);
+        assert_eq!(config.codex_config_overrides, Vec::<String>::new());
 
         let _ = fs::remove_file(path);
     }

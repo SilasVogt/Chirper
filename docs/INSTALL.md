@@ -37,6 +37,7 @@ Required for whisper.cpp Vulkan builds:
 Optional:
 
 - Ollama, for local LLM proofreading after the rules formatter
+- Codex CLI, for OpenAI/Codex proofreading after the rules formatter
 - ROCm/HIP tooling, only if your distro/GPU stack supports the ROCm backend
 
 Example Arch/CachyOS package set:
@@ -153,3 +154,21 @@ chirper format-compare --report-dir ./chirper-reports "hello comma world period"
 The compare command runs models sequentially and unloads each model afterward by
 default. Reports include model output, timing, a hardware snapshot, and
 best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
+
+## Codex CLI Formatting
+
+If the OpenAI Codex CLI is installed and logged in, Chirper can use `codex exec`
+as the proofreader instead of Ollama:
+
+```sh
+chirper codex-current
+chirper codex-list
+chirper codex-use gpt-5.5 --effort low --fast
+```
+
+For comparison runs, define `[codex_profiles.<name>]` entries in
+`~/.config/chirper/config.toml`, then run:
+
+```sh
+chirper format-compare --no-ollama --codex-profile fast --report-dir ./chirper-reports "hello comma world period"
+```

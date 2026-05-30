@@ -44,6 +44,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add formatter contract implementation.
 - [x] Add deterministic spoken punctuation/symbol formatter.
 - [x] Add Ollama formatter backend.
+- [x] Add Codex CLI formatter backend.
 - [x] Add Ollama model menu once formatter backend exists.
 - [x] Add modes: auto, standard, email, command, code.
 - [x] Add personal dictionary.
@@ -52,6 +53,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add CLI formatter comparison across installed Ollama models.
 - [x] Add raw-only formatter comparison mode.
 - [x] Add formatter comparison reports with hardware and telemetry.
+- [x] Add Codex CLI profiles to formatter comparison.
 - [ ] Add snippets.
 - [ ] Add app/context profiles.
 

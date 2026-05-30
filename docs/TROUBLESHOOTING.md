@@ -159,3 +159,15 @@ default formatter. For side-by-side prompt testing:
 chirper format-compare --prompt-input raw --report-dir ./reports "your transcript"
 chirper format-compare --prompt-input both --report-dir ./reports "your transcript"
 ```
+
+To compare Codex CLI settings instead of local Ollama models, first check that
+Codex is available:
+
+```sh
+chirper codex-current
+chirper codex-list
+chirper format-compare --no-ollama --codex --report-dir ./reports "your transcript"
+```
+
+If Codex returns an auth or connectivity error, run `codex doctor` and fix the
+Codex CLI login before enabling `formatter_backend = "codex"`.

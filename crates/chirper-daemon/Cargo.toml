@@ -14,6 +14,7 @@ chirper-api = { path = "../chirper-api" }
 chirper-asr-whispercpp = { path = "../chirper-asr-whispercpp" }
 chirper-audio-pipewire = { path = "../chirper-audio-pipewire" }
 chirper-core = { path = "../chirper-core" }
+chirper-formatter-codex = { path = "../chirper-formatter-codex" }
 chirper-formatter-ollama = { path = "../chirper-formatter-ollama" }
 chirper-formatter-rules = { path = "../chirper-formatter-rules" }
 chirper-insertion-clipboard = { path = "../chirper-insertion-clipboard" }

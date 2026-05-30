@@ -33,6 +33,7 @@ dependencies = [
  "chirper-asr-whispercpp",
  "chirper-audio-pipewire",
  "chirper-core",
+ "chirper-formatter-codex",
  "chirper-formatter-ollama",
  "chirper-formatter-rules",
  "chirper-insertion-clipboard",
@@ -56,10 +57,18 @@ dependencies = [
  "chirper-asr-whispercpp",
  "chirper-audio-pipewire",
  "chirper-core",
+ "chirper-formatter-codex",
  "chirper-formatter-ollama",
  "chirper-formatter-rules",
  "chirper-insertion-clipboard",
  "serde_json",
+]
+
+[[package]]
+name = "chirper-formatter-codex"
+version = "0.1.0"
+dependencies = [
+ "chirper-core",
 ]
 
 [[package]]

@@ -130,10 +130,11 @@ and common downloadable models. Selecting a model updates
 transcription.
 
 The `Formatter` submenu and preferences section can switch between local rules,
-no formatting, and installed Ollama models. Selecting an Ollama model enables
-the Ollama formatter and stores `formatter_backend = "ollama"` plus the selected
-`ollama_model` in `~/.config/chirper/config.toml`. The daemon reads that config
-on the next transcription.
+no formatting, Codex CLI, and installed Ollama models. Selecting an Ollama model
+enables the Ollama formatter and stores `formatter_backend = "ollama"` plus the
+selected `ollama_model` in `~/.config/chirper/config.toml`. Selecting Codex
+stores `formatter_backend = "codex"` and uses the configured `codex_*` settings.
+The daemon reads that config on the next transcription.
 
 ## Design Boundary
 

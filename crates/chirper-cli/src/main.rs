@@ -17,9 +17,10 @@ use chirper_api::{send_request, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AsrEngine, AudioSource, ChirperConfig, DictationMode, FormatterBackend, ServiceCommand,
-    TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
+    AsrEngine, AudioSource, ChirperConfig, CodexProfileConfig, DictationMode, FormatterBackend,
+    ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
+use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
     list_ollama_models, OllamaFormatter, OllamaModel, OllamaOptions, OllamaPromptInput,
 };
@@ -148,6 +149,26 @@ fn main() {
 
     if matches!(first.as_deref(), Some("ollama-use")) {
         ollama_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("codex-current")) {
+        codex_current(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("codex-use")) {
+        codex_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("codex-list") | Some("codex-models")) {
+        codex_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("codex-profiles")) {
+        codex_profiles(args.collect());
         return;
     }
 
@@ -856,6 +877,12 @@ fn formatter_current(args: Vec<String>) {
             "backend": config.formatter_backend.as_config_value(),
             "ollama_model": config.ollama_model,
             "ollama_command": config.ollama_command,
+            "codex_command": config.codex_command,
+            "codex_model": config.codex_model,
+            "codex_profile": config.codex_profile,
+            "codex_reasoning_effort": config.codex_reasoning_effort,
+            "codex_service_tier": config.codex_service_tier,
+            "codex_config_overrides": config.codex_config_overrides,
         });
 
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
@@ -865,12 +892,32 @@ fn formatter_current(args: Vec<String>) {
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
+    println!("codex_command: {}", config.codex_command);
+    println!(
+        "codex_model: {}",
+        config.codex_model.as_deref().unwrap_or("<codex default>")
+    );
+    println!(
+        "codex_profile: {}",
+        config.codex_profile.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "codex_reasoning_effort: {}",
+        config
+            .codex_reasoning_effort
+            .as_deref()
+            .unwrap_or("<default>")
+    );
+    println!(
+        "codex_service_tier: {}",
+        config.codex_service_tier.as_deref().unwrap_or("<default>")
+    );
     println!("vocabulary_entries: {}", config.vocabulary.len());
 }
 
 fn formatter_use(args: Vec<String>) {
     let Some(selection) = args.first() else {
-        eprintln!("usage: chirper formatter-use <none|rules|ollama> [ollama-model]");
+        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex> [model]");
         std::process::exit(1);
     };
 
@@ -892,14 +939,35 @@ fn formatter_use(args: Vec<String>) {
         }
     }
 
-    if let Err(error) = ChirperConfig::save_default_formatter_selection(backend, model) {
+    if backend == FormatterBackend::Codex {
+        if let Some(model) = model {
+            if let Err(error) = ChirperConfig::save_default_codex_selection(
+                Some(model),
+                None,
+                None,
+                None,
+                &[],
+                false,
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let ollama_model = (backend == FormatterBackend::Ollama)
+        .then_some(model)
+        .flatten();
+    if let Err(error) = ChirperConfig::save_default_formatter_selection(backend, ollama_model) {
         eprintln!("{error}");
         std::process::exit(1);
     }
 
     println!("selected formatter: {}", backend.as_config_value());
-    if let Some(model) = model {
+    if let Some(model) = model.filter(|_| backend == FormatterBackend::Ollama) {
         println!("ollama_model: {model}");
+    } else if let Some(model) = model.filter(|_| backend == FormatterBackend::Codex) {
+        println!("codex_model: {model}");
     }
     println!("the daemon will use this for the next transcription");
 }
@@ -1030,6 +1098,382 @@ fn ollama_status_json(
         },
         "models": models_json,
     })
+}
+
+fn codex_current(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let available = command_available(&config.codex_command);
+
+    if json {
+        let value = serde_json::json!({
+            "available": available,
+            "formatter": config.formatter_backend.as_config_value(),
+            "command": config.codex_command,
+            "current": codex_options_json(&CodexOptions::from_config(&config)),
+            "profiles": config.codex_profiles.iter().map(codex_profile_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("formatter: {}", config.formatter_backend.as_config_value());
+    println!("codex_available: {available}");
+    println!("codex_command: {}", config.codex_command);
+    print_codex_options("current", &CodexOptions::from_config(&config));
+
+    if !config.codex_profiles.is_empty() {
+        println!();
+        println!("configured profiles:");
+        for profile in &config.codex_profiles {
+            println!("  {}", format_codex_profile_summary(profile));
+        }
+    }
+}
+
+fn codex_use(args: Vec<String>) {
+    let mut model = None;
+    let mut profile = None;
+    let mut reasoning_effort = None;
+    let mut service_tier = None;
+    let mut config_overrides = Vec::new();
+    let mut enable = true;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if let Some(value) = arg.strip_prefix("--model=") {
+            model = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--model" {
+            model = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--profile=") {
+            profile = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--profile" {
+            profile = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--effort=")
+            .or_else(|| arg.strip_prefix("--reasoning-effort="))
+        {
+            reasoning_effort = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--effort" || arg == "--reasoning-effort" {
+            reasoning_effort = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--service-tier=")
+            .or_else(|| arg.strip_prefix("--tier="))
+        {
+            service_tier = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--service-tier" || arg == "--tier" {
+            service_tier = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            push_config_override(&mut config_overrides, value);
+            index += 1;
+        } else if arg == "--config" {
+            if let Some(value) = args.get(index + 1) {
+                push_config_override(&mut config_overrides, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--fast" {
+            service_tier = Some("priority".to_string());
+            index += 1;
+        } else if arg == "--extra-high" || arg == "--xhigh" {
+            reasoning_effort = Some("xhigh".to_string());
+            index += 1;
+        } else if arg == "--high" || arg == "--medium" || arg == "--low" {
+            reasoning_effort = Some(arg.trim_start_matches("--").to_string());
+            index += 1;
+        } else if arg == "--no-enable" {
+            enable = false;
+            index += 1;
+        } else if arg == "--enable" {
+            enable = true;
+            index += 1;
+        } else if model.is_none() {
+            model = normalize_optional_cli_value(arg);
+            index += 1;
+        } else {
+            eprintln!(
+                "usage: chirper codex-use [MODEL] [--effort low|medium|high|xhigh] [--service-tier priority] [--fast] [--profile CODEX_PROFILE] [--config key=value] [--enable|--no-enable]"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    if let Err(error) = ChirperConfig::save_default_codex_selection(
+        model.as_deref(),
+        profile.as_deref(),
+        reasoning_effort.as_deref(),
+        service_tier.as_deref(),
+        &config_overrides,
+        enable,
+    ) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected Codex formatter settings");
+    println!("formatter_enabled: {enable}");
+    println!("model: {}", model.as_deref().unwrap_or("<codex default>"));
+    println!("profile: {}", profile.as_deref().unwrap_or("<none>"));
+    println!(
+        "reasoning_effort: {}",
+        reasoning_effort.as_deref().unwrap_or("<default>")
+    );
+    println!(
+        "service_tier: {}",
+        service_tier.as_deref().unwrap_or("<default>")
+    );
+    if !config_overrides.is_empty() {
+        println!("config_overrides: {}", config_overrides.join(", "));
+    }
+}
+
+fn codex_profiles(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+
+    if json {
+        let value = serde_json::json!({
+            "profiles": config.codex_profiles.iter().map(codex_profile_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    if config.codex_profiles.is_empty() {
+        println!("no Codex profiles configured");
+        println!("add [codex_profiles.fast] entries to ~/.config/chirper/config.toml");
+        return;
+    }
+
+    println!("Codex profiles:");
+    for profile in &config.codex_profiles {
+        println!("  {}", format_codex_profile_summary(profile));
+    }
+}
+
+fn codex_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let models = match codex_model_catalog(&config.codex_command) {
+        Ok(models) => models,
+        Err(error) => {
+            if json {
+                let value = serde_json::json!({
+                    "available": false,
+                    "error": error,
+                    "models": [],
+                });
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                return;
+            }
+
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    if json {
+        let value = serde_json::json!({
+            "available": true,
+            "models": models,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("available Codex models:");
+    for model in models {
+        let slug = model
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let display = model
+            .get("display_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(slug);
+        let default_effort = model
+            .get("default_reasoning_level")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("default");
+        let efforts = model
+            .get("supported_reasoning_levels")
+            .and_then(serde_json::Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level.get("effort").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        let tiers = model
+            .get("service_tiers")
+            .and_then(serde_json::Value::as_array)
+            .map(|tiers| {
+                tiers
+                    .iter()
+                    .filter_map(|tier| tier.get("id").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+
+        println!("  {slug:<24} {display}");
+        println!("    default_effort: {default_effort}");
+        if !efforts.is_empty() {
+            println!("    efforts: {efforts}");
+        }
+        if !tiers.is_empty() {
+            println!("    service_tiers: {tiers}");
+        }
+    }
+}
+
+fn codex_model_catalog(command: &str) -> Result<Vec<serde_json::Value>, String> {
+    let output = Command::new(command)
+        .arg("debug")
+        .arg("models")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|source| format!("failed to run `{command} debug models`: {source}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "`{command} debug models` exited with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let value = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .map_err(|source| format!("failed to parse Codex model catalog JSON: {source}"))?;
+    let models = value
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Codex model catalog did not contain a models array".to_string())?;
+
+    Ok(models
+        .iter()
+        .map(|model| {
+            serde_json::json!({
+                "slug": model.get("slug").and_then(serde_json::Value::as_str),
+                "display_name": model.get("display_name").and_then(serde_json::Value::as_str),
+                "default_reasoning_level": model.get("default_reasoning_level").and_then(serde_json::Value::as_str),
+                "supported_reasoning_levels": model.get("supported_reasoning_levels").cloned().unwrap_or_else(|| serde_json::json!([])),
+                "additional_speed_tiers": model.get("additional_speed_tiers").cloned().unwrap_or_else(|| serde_json::json!([])),
+                "service_tiers": model.get("service_tiers").cloned().unwrap_or_else(|| serde_json::json!([])),
+                "supported_in_api": model.get("supported_in_api").and_then(serde_json::Value::as_bool),
+            })
+        })
+        .collect())
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn normalize_optional_cli_value(value: &str) -> Option<String> {
+    let value = value.trim();
+
+    if value.is_empty() || matches!(value, "default" | "none" | "unset" | "auto") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn push_config_override(config_overrides: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() {
+        config_overrides.push(value.to_string());
+    }
+}
+
+fn codex_options_json(options: &CodexOptions) -> serde_json::Value {
+    serde_json::json!({
+        "model": options.model.as_deref(),
+        "profile": options.profile.as_deref(),
+        "reasoning_effort": options.reasoning_effort.as_deref(),
+        "service_tier": options.service_tier.as_deref(),
+        "config_overrides": options.config_overrides.as_slice(),
+        "label": options.label(),
+    })
+}
+
+fn codex_profile_json(profile: &CodexProfileConfig) -> serde_json::Value {
+    serde_json::json!({
+        "name": profile.name.as_str(),
+        "model": profile.model.as_deref(),
+        "profile": profile.profile.as_deref(),
+        "reasoning_effort": profile.reasoning_effort.as_deref(),
+        "service_tier": profile.service_tier.as_deref(),
+        "config_overrides": profile.config_overrides.as_slice(),
+    })
+}
+
+fn print_codex_options(label: &str, options: &CodexOptions) {
+    println!("{label}: {}", options.label());
+    println!(
+        "  model: {}",
+        options.model.as_deref().unwrap_or("<codex default>")
+    );
+    println!(
+        "  profile: {}",
+        options.profile.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "  reasoning_effort: {}",
+        options.reasoning_effort.as_deref().unwrap_or("<default>")
+    );
+    println!(
+        "  service_tier: {}",
+        options.service_tier.as_deref().unwrap_or("<default>")
+    );
+    if !options.config_overrides.is_empty() {
+        println!(
+            "  config_overrides: {}",
+            options.config_overrides.join(", ")
+        );
+    }
+}
+
+fn format_codex_profile_summary(profile: &CodexProfileConfig) -> String {
+    let options = CodexOptions {
+        command: "codex".to_string(),
+        model: profile.model.clone(),
+        profile: profile.profile.clone(),
+        reasoning_effort: profile.reasoning_effort.clone(),
+        service_tier: profile.service_tier.clone(),
+        config_overrides: profile.config_overrides.clone(),
+        vocabulary: Vec::new(),
+    };
+
+    format!("{}: {}", profile.name, options.label())
 }
 
 fn vocab_list(args: Vec<String>) {
@@ -1377,6 +1821,11 @@ fn format_test(args: Vec<String>) {
 struct FormatCompareArgs {
     mode: DictationMode,
     models: Vec<String>,
+    include_ollama: bool,
+    force_all_ollama: bool,
+    include_codex_current: bool,
+    codex_profiles: Vec<String>,
+    all_codex_profiles: bool,
     include_rules: bool,
     keep_loaded: bool,
     prompt_input: ComparePromptInput,
@@ -1399,6 +1848,13 @@ impl ComparePromptInput {
         }
     }
 
+    fn as_codex_input(self) -> CodexPromptInput {
+        match self {
+            Self::RawOnly => CodexPromptInput::RawOnly,
+            Self::RawAndPreprocessed => CodexPromptInput::RawAndPreprocessed,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::RawOnly => "raw",
@@ -1412,14 +1868,14 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--prompt-input raw|both] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
         );
         std::process::exit(1);
     }
 
     let config = load_config_or_exit();
     let transcript = chirper_core::Transcript {
-        text: args.text,
+        text: args.text.clone(),
         language: None,
     };
     let preformatted = match format_with_rules(&config, &transcript, args.mode) {
@@ -1429,7 +1885,12 @@ fn format_compare(args: Vec<String>) {
             std::process::exit(1);
         }
     };
-    let models = if args.models.is_empty() {
+    let codex_requested =
+        args.include_codex_current || args.all_codex_profiles || !args.codex_profiles.is_empty();
+    let load_all_ollama = args.include_ollama
+        && args.models.is_empty()
+        && (!codex_requested || args.force_all_ollama);
+    let models = if load_all_ollama {
         match list_ollama_models(&config.ollama_command) {
             Ok(models) => models
                 .into_iter()
@@ -1440,12 +1901,17 @@ fn format_compare(args: Vec<String>) {
                 std::process::exit(1);
             }
         }
+    } else if args.include_ollama {
+        args.models.clone()
     } else {
-        args.models
+        Vec::new()
     };
+    let codex_runs = resolve_codex_compare_runs(&config, &args);
 
-    if models.is_empty() && !args.include_rules {
-        eprintln!("no Ollama models installed; run `chirper ollama-list` or enable rules output");
+    if models.is_empty() && codex_runs.is_empty() && !args.include_rules {
+        eprintln!(
+            "no formatter targets selected; run `chirper ollama-list`, pass `--codex`, or enable rules output"
+        );
         std::process::exit(1);
     }
 
@@ -1492,6 +1958,37 @@ fn format_compare(args: Vec<String>) {
             },
             Err(error) => FormatCompareResult {
                 name: model,
+                elapsed_ms,
+                metrics,
+                output: None,
+                error: Some(error.to_string()),
+            },
+        });
+    }
+
+    for (name, options) in codex_runs {
+        let formatter = CodexFormatter::new(options);
+        let started = Instant::now();
+        let (result, metrics) = run_with_resource_sampling(|| {
+            formatter.format_with_prompt_input(
+                &transcript,
+                &preformatted,
+                args.mode,
+                args.prompt_input.as_codex_input(),
+            )
+        });
+        let elapsed_ms = started.elapsed().as_millis();
+
+        results.push(match result {
+            Ok(output) => FormatCompareResult {
+                name,
+                elapsed_ms,
+                metrics,
+                output: Some(output),
+                error: None,
+            },
+            Err(error) => FormatCompareResult {
+                name,
                 elapsed_ms,
                 metrics,
                 output: None,
@@ -1570,6 +2067,11 @@ fn format_compare(args: Vec<String>) {
 fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut mode = configured_mode();
     let mut models = Vec::new();
+    let mut include_ollama = true;
+    let mut force_all_ollama = false;
+    let mut include_codex_current = false;
+    let mut codex_profiles = Vec::new();
+    let mut all_codex_profiles = false;
     let mut include_rules = true;
     let mut keep_loaded = false;
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
@@ -1611,6 +2113,39 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             } else {
                 index += 1;
             }
+        } else if arg == "--no-ollama" {
+            include_ollama = false;
+            index += 1;
+        } else if arg == "--all-ollama" {
+            force_all_ollama = true;
+            include_ollama = true;
+            index += 1;
+        } else if arg == "--codex" {
+            include_codex_current = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--codex-profile=") {
+            push_model_values(&mut codex_profiles, value);
+            index += 1;
+        } else if arg == "--codex-profile" {
+            if let Some(value) = args.get(index + 1) {
+                push_model_values(&mut codex_profiles, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(value) = arg.strip_prefix("--codex-profiles=") {
+            push_model_values(&mut codex_profiles, value);
+            index += 1;
+        } else if arg == "--codex-profiles" {
+            if let Some(value) = args.get(index + 1) {
+                push_model_values(&mut codex_profiles, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--all-codex-profiles" {
+            all_codex_profiles = true;
+            index += 1;
         } else if arg == "--no-rules" {
             include_rules = false;
             index += 1;
@@ -1659,6 +2194,11 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     FormatCompareArgs {
         mode,
         models,
+        include_ollama,
+        force_all_ollama,
+        include_codex_current,
+        codex_profiles,
+        all_codex_profiles,
         include_rules,
         keep_loaded,
         prompt_input,
@@ -1685,6 +2225,48 @@ fn push_model_values(models: &mut Vec<String>, value: &str) {
             models.push(model.to_string());
         }
     }
+}
+
+fn resolve_codex_compare_runs(
+    config: &ChirperConfig,
+    args: &FormatCompareArgs,
+) -> Vec<(String, CodexOptions)> {
+    let mut runs = Vec::new();
+
+    if args.include_codex_current {
+        runs.push((
+            format!("codex:{}", CodexOptions::from_config(config).label()),
+            CodexOptions::from_config(config),
+        ));
+    }
+
+    if args.all_codex_profiles {
+        for profile in &config.codex_profiles {
+            runs.push((
+                format!("codex:{}", profile.name),
+                CodexOptions::from_named_profile(config, profile),
+            ));
+        }
+    }
+
+    for profile_name in &args.codex_profiles {
+        let Some(profile) = config
+            .codex_profiles
+            .iter()
+            .find(|profile| profile.name == *profile_name)
+        else {
+            eprintln!("unknown Codex profile: {profile_name}");
+            eprintln!("run `chirper codex-profiles` to see configured profiles");
+            std::process::exit(1);
+        };
+
+        runs.push((
+            format!("codex:{}", profile.name),
+            CodexOptions::from_named_profile(config, profile),
+        ));
+    }
+
+    runs
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2565,6 +3147,22 @@ fn print_status() {
     );
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
+    println!("codex_command: {}", config.codex_command);
+    println!(
+        "codex_model: {}",
+        config.codex_model.as_deref().unwrap_or("<codex default>")
+    );
+    println!(
+        "codex_reasoning_effort: {}",
+        config
+            .codex_reasoning_effort
+            .as_deref()
+            .unwrap_or("<default>")
+    );
+    println!(
+        "codex_service_tier: {}",
+        config.codex_service_tier.as_deref().unwrap_or("<default>")
+    );
 }
 
 fn parse_format_test_args(args: Vec<String>) -> (DictationMode, String) {
@@ -2636,6 +3234,12 @@ fn format_transcript_with_config(
         FormatterBackend::Ollama => {
             let preformatted = format_with_rules(config, transcript, mode)?;
             OllamaFormatter::new(OllamaOptions::from_config(config))
+                .format_with_context(transcript, &preformatted, mode)
+                .map_err(|error| error.to_string())
+        }
+        FormatterBackend::Codex => {
+            let preformatted = format_with_rules(config, transcript, mode)?;
+            CodexFormatter::new(CodexOptions::from_config(config))
                 .format_with_context(transcript, &preformatted, mode)
                 .map_err(|error| error.to_string())
         }

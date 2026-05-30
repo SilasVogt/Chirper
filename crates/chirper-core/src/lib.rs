@@ -4,8 +4,8 @@ pub mod state;
 pub mod traits;
 
 pub use config::{
-    AsrBackend, AudioBackend, ChirperConfig, FormatterBackend, GpuBackend, InsertionBackend,
-    VocabularyEntry, WHISPER_MODEL_NAMES,
+    AsrBackend, AudioBackend, ChirperConfig, CodexProfileConfig, FormatterBackend, GpuBackend,
+    InsertionBackend, VocabularyEntry, WHISPER_MODEL_NAMES,
 };
 pub use error::{ChirperError, ChirperResult};
 pub use state::{DictationMode, ServiceCommand, WorkflowEvent, WorkflowState};

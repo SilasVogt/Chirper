@@ -14,6 +14,7 @@ use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, FormatterBackend, TextInserter, Transcript,
     WorkflowState,
 };
+use chirper_formatter_codex::{CodexFormatter, CodexOptions};
 use chirper_formatter_ollama::{OllamaFormatter, OllamaOptions};
 use chirper_formatter_rules::{format_spoken_rules_with_vocabulary, learn_spelling_vocabulary};
 use chirper_insertion_clipboard::ClipboardInserter;
@@ -385,6 +386,12 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
         FormatterBackend::Ollama => {
             let preformatted = format_with_rules(config, transcript)?;
             OllamaFormatter::new(OllamaOptions::from_config(config))
+                .format_with_context(transcript, &preformatted, config.dictation_mode)
+                .map_err(|error| error.to_string())
+        }
+        FormatterBackend::Codex => {
+            let preformatted = format_with_rules(config, transcript)?;
+            CodexFormatter::new(CodexOptions::from_config(config))
                 .format_with_context(transcript, &preformatted, config.dictation_mode)
                 .map_err(|error| error.to_string())
         }
