@@ -1208,6 +1208,7 @@ struct FormatCompareArgs {
     mode: DictationMode,
     models: Vec<String>,
     include_rules: bool,
+    keep_loaded: bool,
     json: bool,
     text: String,
 }
@@ -1217,7 +1218,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--no-rules] [--json] <text>"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--no-rules] [--keep-loaded] [--json] <text>"
         );
         std::process::exit(1);
     }
@@ -1274,6 +1275,9 @@ fn format_compare(args: Vec<String>) {
         });
         let result = formatter.format_with_context(&transcript, &preformatted, args.mode);
         let elapsed_ms = started.elapsed().as_millis();
+        if !args.keep_loaded {
+            stop_ollama_model_silent(&config.ollama_command, &model);
+        }
 
         results.push(match result {
             Ok(output) => FormatCompareResult {
@@ -1324,6 +1328,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut mode = configured_mode();
     let mut models = Vec::new();
     let mut include_rules = true;
+    let mut keep_loaded = false;
     let mut json = false;
     let mut text = Vec::new();
     let mut index = 0;
@@ -1367,6 +1372,9 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--rules" {
             include_rules = true;
             index += 1;
+        } else if arg == "--keep-loaded" {
+            keep_loaded = true;
+            index += 1;
         } else if arg == "--json" {
             json = true;
             index += 1;
@@ -1380,6 +1388,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         mode,
         models,
         include_rules,
+        keep_loaded,
         json,
         text: text.join(" "),
     }
@@ -1418,6 +1427,16 @@ fn format_elapsed(elapsed_ms: u128) -> String {
     } else {
         format!("{elapsed_ms}ms")
     }
+}
+
+fn stop_ollama_model_silent(command: &str, model: &str) {
+    let _ = Command::new(command)
+        .arg("stop")
+        .arg(model)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn dictate_test(seconds: Option<&str>) {

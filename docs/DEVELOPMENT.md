@@ -88,7 +88,8 @@ cargo run -p chirper-cli -- format-compare --json "hello comma world"
 
 The command runs models sequentially so timing stays meaningful and large models
 do not compete for VRAM. It includes the rules-only preprocessed output unless
-`--no-rules` is passed.
+`--no-rules` is passed. Compared models are unloaded after each run by default;
+pass `--keep-loaded` only when intentionally testing warm repeated generations.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:
