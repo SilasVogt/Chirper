@@ -40,7 +40,7 @@ whispercpp_command = "whisper-cli"
 # whispercpp_model_path = "/home/silas/.local/share/chirper/models/ggml-base.bin"
 whispercpp_model_path = ""
 
-# Empty or "auto" lets whisper.cpp choose. Use "en", "de", etc. to force one.
+# Empty or "auto" lets whisper.cpp choose. Use "en", "id", "de", etc. to force one.
 whisper_language = "auto"
 
 # Ollama is optional. Use `chirper ollama-list`, `chirper ollama-use <model>`,

@@ -361,6 +361,24 @@ impl ChirperConfig {
         })
     }
 
+    pub fn save_language_selection(
+        path: impl AsRef<Path>,
+        language: Option<&str>,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        let language = language
+            .map(str::trim)
+            .filter(|language| !language.is_empty() && !language.eq_ignore_ascii_case("auto"));
+
+        table.insert(
+            "whisper_language".to_string(),
+            toml::Value::String(language.unwrap_or("auto").to_string()),
+        );
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_vocabulary_entry(
         path: impl AsRef<Path>,
         spoken: &str,
@@ -427,6 +445,10 @@ impl ChirperConfig {
         ollama_model: Option<&str>,
     ) -> ChirperResult<()> {
         Self::save_formatter_selection(Self::default_path(), backend, ollama_model)
+    }
+
+    pub fn save_default_language_selection(language: Option<&str>) -> ChirperResult<()> {
+        Self::save_language_selection(Self::default_path(), language)
     }
 
     pub fn save_default_vocabulary_entry(spoken: &str, written: &str) -> ChirperResult<()> {
@@ -880,6 +902,37 @@ mod tests {
 
         assert_eq!(config.formatter_backend, FormatterBackend::Rules);
         assert_eq!(config.ollama_model, "llama3.2:latest");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_language_selection_updates_only_language_field() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "language"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_language_selection(&path, Some("id")).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.whisper_language, Some("id".to_string()));
+
+        ChirperConfig::save_language_selection(&path, None).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.whisper_language, None);
 
         let _ = fs::remove_file(path);
     }

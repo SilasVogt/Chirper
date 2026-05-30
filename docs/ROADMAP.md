@@ -21,6 +21,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add reusable dictation workflow orchestration.
 - [x] Implement `chirper toggle`.
 - [x] Add user-selectable Whisper model commands.
+- [x] Add user-selectable transcription language commands.
 - [x] Verify record -> transcribe -> insert on GNOME.
 
 ## Milestone 2: GNOME Integration
@@ -33,6 +34,7 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add extension menu with status and settings action.
 - [x] Add extension recording hotkey.
 - [x] Add extension Whisper model menu.
+- [x] Add settings window transcription language selector.
 - [ ] Add extension mode switch.
 - [ ] Add GTK/libadwaita settings app.
 - [ ] Add diagnostics for audio, GPU backend, and insertion backend.
@@ -48,6 +50,8 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Pass raw transcript plus preprocessed draft into Ollama formatting.
 - [x] Add deterministic domain/email cleanup before LLM formatting.
 - [x] Add CLI formatter comparison across installed Ollama models.
+- [x] Add raw-only formatter comparison mode.
+- [x] Add formatter comparison reports with hardware and telemetry.
 - [ ] Add snippets.
 - [ ] Add app/context profiles.
 

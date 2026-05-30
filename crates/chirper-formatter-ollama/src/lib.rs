@@ -27,6 +27,12 @@ pub struct OllamaModel {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaPromptInput {
+    RawOnly,
+    RawAndPreprocessed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaFormatter {
     options: OllamaOptions,
@@ -43,11 +49,29 @@ impl OllamaFormatter {
         preprocessed_text: &str,
         mode: DictationMode,
     ) -> ChirperResult<String> {
+        self.format_with_prompt_input(
+            raw_transcript,
+            preprocessed_text,
+            mode,
+            OllamaPromptInput::RawAndPreprocessed,
+        )
+    }
+
+    pub fn format_with_prompt_input(
+        &self,
+        raw_transcript: &Transcript,
+        preprocessed_text: &str,
+        mode: DictationMode,
+        input: OllamaPromptInput,
+    ) -> ChirperResult<String> {
         self.ensure_model_installed()?;
 
         let prompt = build_formatting_prompt(
             &raw_transcript.text,
-            preprocessed_text,
+            match input {
+                OllamaPromptInput::RawOnly => None,
+                OllamaPromptInput::RawAndPreprocessed => Some(preprocessed_text),
+            },
             mode,
             &self.options.vocabulary,
         );
@@ -76,7 +100,11 @@ impl OllamaFormatter {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let formatted = clean_model_output(&stdout);
-        if formatted.is_empty() && !preprocessed_text.trim().is_empty() {
+        let input_text = match input {
+            OllamaPromptInput::RawOnly => &raw_transcript.text,
+            OllamaPromptInput::RawAndPreprocessed => preprocessed_text,
+        };
+        if formatted.is_empty() && !input_text.trim().is_empty() {
             return Err(ChirperError::Formatting(
                 "ollama returned an empty formatter response".to_string(),
             ));
@@ -142,7 +170,7 @@ pub fn parse_ollama_list(stdout: &str) -> Vec<OllamaModel> {
 
 fn build_formatting_prompt(
     raw_text: &str,
-    preprocessed_text: &str,
+    preprocessed_text: Option<&str>,
     mode: DictationMode,
     vocabulary: &[VocabularyEntry],
 ) -> String {
@@ -160,6 +188,41 @@ fn build_formatting_prompt(
         }
         section
     };
+    let input_guidance = match preprocessed_text {
+        Some(_) => "\
+You receive both the raw transcript and Chirper's local preprocessed draft.
+The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
+Use the raw transcript as extra evidence for intended spelling and casing clues, such as \"spelled as one word in Pascal case\", \"pronounced ...\", \"capital p capital f\", \"all caps\", or letter-by-letter spellings.
+",
+        None => "\
+You receive only the raw transcript.
+You MUST apply clear spoken edit commands, spoken punctuation, spelling instructions, casing instructions, and preferred spellings yourself.
+Treat spoken instruction phrases as formatting instructions, not ordinary content.
+",
+    };
+    let input_section = match preprocessed_text {
+        Some(preprocessed_text) => format!(
+            "\
+Raw transcript:
+<<<
+{raw_text}
+>>>
+
+Preprocessed draft:
+<<<
+{preprocessed_text}
+>>>
+"
+        ),
+        None => format!(
+            "\
+Raw transcript:
+<<<
+{raw_text}
+>>>
+"
+        ),
+    };
 
     format!(
         "\
@@ -169,9 +232,7 @@ Return only the final text. Do not explain, summarize, add facts, or wrap the re
 You are a conservative proofreader for speech-to-text output, not a rewriting assistant.
 Preserve the speaker's meaning, wording, order, and all ordinary content words.
 Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
-You receive both the raw transcript and Chirper's local preprocessed draft.
-The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
-Use the raw transcript as extra evidence for intended spelling and casing clues, such as \"spelled as one word in Pascal case\", \"pronounced ...\", \"capital p capital f\", \"all caps\", or letter-by-letter spellings.
+{input_guidance}
 You MUST apply spoken spelling/casing instructions when they clearly modify a nearby name, handle, acronym, URL, email, version, or identifier.
 After applying a spoken instruction, remove the instruction words from the final text.
 Examples:
@@ -187,15 +248,7 @@ If the input is empty or contains no speech, return an empty string.
 
 Mode: {mode:?}
 
-Raw transcript:
-<<<
-{raw_text}
->>>
-
-Preprocessed draft:
-<<<
-{preprocessed_text}
->>>
+{input_section}
 
 Final text:"
     )
@@ -267,7 +320,7 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
     fn prompt_contains_mode_and_input() {
         let prompt = build_formatting_prompt(
             "hello comma world that's spelled as one word in pascal case",
-            "HelloWorld",
+            Some("HelloWorld"),
             DictationMode::Standard,
             &[VocabularyEntry {
                 spoken: "silas on linux".to_string(),
@@ -286,6 +339,16 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         assert!(prompt.contains("PixelFerretTV"));
         assert!(prompt.contains("Jana, pronounced Yah-nah"));
         assert!(prompt.contains("\"silas on linux\" => \"SilasOnLinux\""));
+    }
+
+    #[test]
+    fn raw_only_prompt_omits_preprocessed_draft() {
+        let prompt =
+            build_formatting_prompt("hello comma world", None, DictationMode::Standard, &[]);
+
+        assert!(prompt.contains("You receive only the raw transcript"));
+        assert!(prompt.contains("Raw transcript:"));
+        assert!(!prompt.contains("Preprocessed draft:"));
     }
 
     #[test]

@@ -86,6 +86,23 @@ cargo run -p chirper-cli -- model-use /path/to/ggml-large-v3-turbo.bin
 The GNOME extension panel menu and settings window use the same CLI commands
 for graphical model switching and downloads.
 
+## Language Selection
+
+Auto language detection can be unreliable for multilingual recordings. Force a
+language with:
+
+```sh
+cargo run -p chirper-cli -- language-use id
+```
+
+Use `auto` to return to whisper.cpp detection:
+
+```sh
+cargo run -p chirper-cli -- language-use auto
+```
+
+The GNOME settings window exposes the same language list.
+
 ## Notes
 
 If CMake fails with:

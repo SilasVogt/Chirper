@@ -59,6 +59,14 @@ cargo run -p chirper-cli -- model-download small --select
 cargo run -p chirper-cli -- model-use base
 ```
 
+To force the transcription language passed to whisper.cpp:
+
+```sh
+cargo run -p chirper-cli -- language-list
+cargo run -p chirper-cli -- language-use id
+cargo run -p chirper-cli -- language-use auto
+```
+
 To inspect and select Ollama formatting models:
 
 ```sh
@@ -83,6 +91,9 @@ the saved daemon configuration:
 ```sh
 cargo run -p chirper-cli -- format-compare "hello comma world"
 cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
+cargo run -p chirper-cli -- format-compare --prompt-input raw "hello comma world"
+cargo run -p chirper-cli -- format-compare --no-preprocessor "hello comma world"
+cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma world"
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
 ```
 
@@ -90,6 +101,12 @@ The command runs models sequentially so timing stays meaningful and large models
 do not compete for VRAM. It includes the rules-only preprocessed output unless
 `--no-rules` is passed. Compared models are unloaded after each run by default;
 pass `--keep-loaded` only when intentionally testing warm repeated generations.
+By default the Ollama prompt receives both the raw transcript and the rules
+preprocessed draft. Use `--prompt-input raw` to test a model without that draft,
+or `--no-preprocessor` to hide rules output and send only the raw transcript.
+`--report-dir` writes a durable text report with the raw input, preprocessed
+draft, model outputs, timings, hardware snapshot, and best-effort average
+CPU/RAM/GPU/VRAM/power telemetry from `/proc` and `/sys`.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

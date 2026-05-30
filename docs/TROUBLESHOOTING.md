@@ -123,6 +123,13 @@ ollama stop gemma4:latest
 
 ## Output Quality Is Poor
 
+If Whisper is detecting the wrong language, force the language first:
+
+```sh
+chirper language-list
+chirper language-use id
+```
+
 First compare rules-only output against the selected Ollama model:
 
 ```sh
@@ -146,4 +153,9 @@ chirper model-download medium --select
 ```
 
 Use `chirper format-compare` to test local Ollama models before making one the
-default formatter.
+default formatter. For side-by-side prompt testing:
+
+```sh
+chirper format-compare --prompt-input raw --report-dir ./reports "your transcript"
+chirper format-compare --prompt-input both --report-dir ./reports "your transcript"
+```

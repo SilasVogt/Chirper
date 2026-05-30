@@ -117,6 +117,7 @@ in, then retry the enable command.
 chirper diagnose
 chirper daemon-status
 chirper audio-list
+chirper language-list
 chirper record-test 3
 ```
 
@@ -146,7 +147,9 @@ To compare all installed Ollama models on the same transcript:
 
 ```sh
 chirper format-compare "hello comma world period"
+chirper format-compare --report-dir ./chirper-reports "hello comma world period"
 ```
 
 The compare command runs models sequentially and unloads each model afterward by
-default.
+default. Reports include model output, timing, a hardware snapshot, and
+best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.

@@ -120,6 +120,10 @@ It starts recording from idle and stops/pastes while recording.
 
 ## Model Settings
 
+The settings window includes a `Transcription Language` section. It controls
+`whisper_language` and is useful when auto detection picks the wrong language;
+for example, Indonesian should be forced with `id`.
+
 The `Whisper Model` submenu and settings window list installed local models
 and common downloadable models. Selecting a model updates
 `~/.config/chirper/config.toml`; the daemon uses the updated model on the next

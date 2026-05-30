@@ -10,6 +10,7 @@ This repo is early but usable for local testing on Linux. The current path is:
 
 - PipeWire audio capture
 - whisper.cpp transcription with CPU, Vulkan, or ROCm builds
+- selectable transcription language for whisper.cpp
 - local rules formatting with preferred spellings
 - optional Ollama proofreading
 - clipboard insertion

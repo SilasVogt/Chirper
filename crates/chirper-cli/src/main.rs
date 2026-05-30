@@ -1,8 +1,15 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    path::PathBuf,
+    env,
+    fmt::Write,
+    fs,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -13,10 +20,37 @@ use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, DictationMode, FormatterBackend, ServiceCommand,
     TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
 };
-use chirper_formatter_ollama::{list_ollama_models, OllamaFormatter, OllamaModel, OllamaOptions};
+use chirper_formatter_ollama::{
+    list_ollama_models, OllamaFormatter, OllamaModel, OllamaOptions, OllamaPromptInput,
+};
 use chirper_formatter_rules::format_spoken_rules_with_vocabulary;
 use chirper_insertion_clipboard::ClipboardInserter;
 use chirper_platform::{PlatformDiagnostics, RuntimeDiagnostics};
+
+const WHISPER_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
+    ("auto", "Auto detect"),
+    ("en", "English"),
+    ("id", "Indonesian"),
+    ("de", "German"),
+    ("fr", "French"),
+    ("es", "Spanish"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("nl", "Dutch"),
+    ("sv", "Swedish"),
+    ("no", "Norwegian"),
+    ("da", "Danish"),
+    ("fi", "Finnish"),
+    ("pl", "Polish"),
+    ("tr", "Turkish"),
+    ("ru", "Russian"),
+    ("uk", "Ukrainian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("zh", "Chinese"),
+    ("hi", "Hindi"),
+    ("ar", "Arabic"),
+];
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -64,6 +98,21 @@ fn main() {
 
     if matches!(first.as_deref(), Some("model-download")) {
         model_download(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("language-current")) {
+        language_current(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("language-list")) {
+        language_list(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("language-use")) {
+        language_use(args.next());
         return;
     }
 
@@ -548,6 +597,127 @@ fn model_download(args: Vec<String>) {
 
         println!("selected whisper model: {model}");
     }
+}
+
+fn language_current(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let code = current_language_code(&config);
+    let label = language_label(&code);
+
+    if json {
+        let value = serde_json::json!({
+            "code": code,
+            "label": label,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("language: {code}");
+    println!("label: {label}");
+}
+
+fn language_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let current = current_language_code(&config);
+
+    if json {
+        let languages = WHISPER_LANGUAGE_OPTIONS
+            .iter()
+            .map(|(code, label)| {
+                serde_json::json!({
+                    "code": code,
+                    "label": label,
+                    "selected": *code == current,
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "current": {
+                "code": current,
+                "label": language_label(&current),
+            },
+            "languages": languages,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("current: {} ({})", current, language_label(&current));
+    println!("languages:");
+    for (code, label) in WHISPER_LANGUAGE_OPTIONS {
+        let marker = if *code == current { "*" } else { " " };
+        println!(" {marker} {:<6} {label}", code);
+    }
+}
+
+fn language_use(selection: Option<String>) {
+    let Some(selection) = selection else {
+        eprintln!("usage: chirper language-use <auto|language-code|language-name>");
+        std::process::exit(1);
+    };
+    let Some(code) = resolve_language_selection(&selection) else {
+        eprintln!("unknown language: {selection}");
+        eprintln!("run `chirper language-list` to see common language codes");
+        std::process::exit(1);
+    };
+    let language = (code != "auto").then_some(code);
+
+    if let Err(error) = ChirperConfig::save_default_language_selection(language) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected whisper language: {code}");
+    println!("label: {}", language_label(code));
+    println!("the daemon will use this for the next transcription");
+}
+
+fn current_language_code(config: &ChirperConfig) -> String {
+    config
+        .whisper_language
+        .as_deref()
+        .and_then(resolve_language_selection)
+        .unwrap_or("auto")
+        .to_string()
+}
+
+fn language_label(code: &str) -> &str {
+    WHISPER_LANGUAGE_OPTIONS
+        .iter()
+        .find_map(|(candidate, label)| (*candidate == code).then_some(*label))
+        .unwrap_or("Custom")
+}
+
+fn resolve_language_selection(selection: &str) -> Option<&'static str> {
+    let normalized_selection = normalize_language_selection(selection);
+
+    if normalized_selection.is_empty()
+        || matches!(
+            normalized_selection.as_str(),
+            "auto" | "default" | "detect" | "autodetect" | "none"
+        )
+    {
+        return Some("auto");
+    }
+
+    if let Some((code, _label)) = WHISPER_LANGUAGE_OPTIONS.iter().find(|(code, label)| {
+        normalize_language_selection(code) == normalized_selection
+            || normalize_language_selection(label) == normalized_selection
+    }) {
+        return Some(*code);
+    }
+
+    None
+}
+
+fn normalize_language_selection(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_', ' '], "")
 }
 
 fn audio_current() {
@@ -1209,8 +1379,32 @@ struct FormatCompareArgs {
     models: Vec<String>,
     include_rules: bool,
     keep_loaded: bool,
+    prompt_input: ComparePromptInput,
+    report_dir: Option<PathBuf>,
     json: bool,
     text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComparePromptInput {
+    RawOnly,
+    RawAndPreprocessed,
+}
+
+impl ComparePromptInput {
+    fn as_ollama_input(self) -> OllamaPromptInput {
+        match self {
+            Self::RawOnly => OllamaPromptInput::RawOnly,
+            Self::RawAndPreprocessed => OllamaPromptInput::RawAndPreprocessed,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::RawOnly => "raw",
+            Self::RawAndPreprocessed => "raw+preprocessed",
+        }
+    }
 }
 
 fn format_compare(args: Vec<String>) {
@@ -1218,7 +1412,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--no-rules] [--keep-loaded] [--json] <text>"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--prompt-input raw|both] [--no-preprocessor] [--report-dir PATH] [--json] <text>"
         );
         std::process::exit(1);
     }
@@ -1255,25 +1449,34 @@ fn format_compare(args: Vec<String>) {
         std::process::exit(1);
     }
 
+    let hardware = collect_hardware_snapshot(&config.ollama_command);
     let mut results = Vec::new();
 
     if args.include_rules {
         results.push(FormatCompareResult {
             name: "rules".to_string(),
             elapsed_ms: 0,
+            metrics: ResourceMetrics::default(),
             output: Some(preformatted.clone()),
             error: None,
         });
     }
 
     for model in models {
-        let started = Instant::now();
         let formatter = OllamaFormatter::new(OllamaOptions {
             command: config.ollama_command.clone(),
             model: model.clone(),
             vocabulary: config.vocabulary.clone(),
         });
-        let result = formatter.format_with_context(&transcript, &preformatted, args.mode);
+        let started = Instant::now();
+        let (result, metrics) = run_with_resource_sampling(|| {
+            formatter.format_with_prompt_input(
+                &transcript,
+                &preformatted,
+                args.mode,
+                args.prompt_input.as_ollama_input(),
+            )
+        });
         let elapsed_ms = started.elapsed().as_millis();
         if !args.keep_loaded {
             stop_ollama_model_silent(&config.ollama_command, &model);
@@ -1283,43 +1486,83 @@ fn format_compare(args: Vec<String>) {
             Ok(output) => FormatCompareResult {
                 name: model,
                 elapsed_ms,
+                metrics,
                 output: Some(output),
                 error: None,
             },
             Err(error) => FormatCompareResult {
                 name: model,
                 elapsed_ms,
+                metrics,
                 output: None,
                 error: Some(error.to_string()),
             },
         });
     }
 
+    let report_path = args.report_dir.as_ref().map(|directory| {
+        write_format_compare_report(
+            directory,
+            &hardware,
+            args.mode,
+            args.prompt_input,
+            &transcript.text,
+            &preformatted,
+            &results,
+        )
+    });
+
     if args.json {
         let value = serde_json::json!({
             "mode": format!("{:?}", args.mode),
+            "prompt_input": args.prompt_input.label(),
+            "preprocessed_sent_to_model": args.prompt_input == ComparePromptInput::RawAndPreprocessed,
             "preprocessed": preformatted,
+            "hardware": hardware_json(&hardware),
+            "report_path": report_path.as_ref().map(|result| result.as_ref().ok().map(|path| path.display().to_string())),
             "results": results.iter().map(format_compare_result_json).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        if let Some(Err(error)) = report_path {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
         return;
     }
 
     println!("mode: {:?}", args.mode);
-    println!("preprocessed:");
+    println!("prompt_input: {}", args.prompt_input.label());
+    println!("hardware:");
+    print_hardware_snapshot(&hardware);
+    if args.prompt_input == ComparePromptInput::RawAndPreprocessed {
+        println!("preprocessed:");
+    } else {
+        println!("preprocessed (not sent to model):");
+    }
     println!("{}", preformatted);
 
     for result in results {
         println!();
         println!(
-            "=== {} ({}) ===",
+            "=== {} ({}, {}) ===",
             result.name,
-            format_elapsed(result.elapsed_ms)
+            format_elapsed(result.elapsed_ms),
+            format_metrics_summary(&result.metrics)
         );
         if let Some(output) = result.output {
             println!("{output}");
         } else if let Some(error) = result.error {
             println!("ERROR: {error}");
+        }
+    }
+
+    if let Some(report_result) = report_path {
+        match report_result {
+            Ok(path) => println!("\nreport: {}", path.display()),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -1329,6 +1572,8 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut models = Vec::new();
     let mut include_rules = true;
     let mut keep_loaded = false;
+    let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
+    let mut report_dir = None;
     let mut json = false;
     let mut text = Vec::new();
     let mut index = 0;
@@ -1375,6 +1620,33 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--keep-loaded" {
             keep_loaded = true;
             index += 1;
+        } else if let Some(value) = arg.strip_prefix("--prompt-input=") {
+            prompt_input = parse_compare_prompt_input(value).unwrap_or(prompt_input);
+            index += 1;
+        } else if arg == "--prompt-input" {
+            if let Some(value) = args.get(index + 1) {
+                prompt_input = parse_compare_prompt_input(value).unwrap_or(prompt_input);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if arg == "--raw-only" {
+            prompt_input = ComparePromptInput::RawOnly;
+            index += 1;
+        } else if arg == "--no-preprocessor" {
+            prompt_input = ComparePromptInput::RawOnly;
+            include_rules = false;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--report-dir=") {
+            report_dir = Some(expand_user_path(value));
+            index += 1;
+        } else if arg == "--report-dir" || arg == "--report" {
+            if let Some(value) = args.get(index + 1) {
+                report_dir = Some(expand_user_path(value));
+                index += 2;
+            } else {
+                index += 1;
+            }
         } else if arg == "--json" {
             json = true;
             index += 1;
@@ -1389,8 +1661,20 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         models,
         include_rules,
         keep_loaded,
+        prompt_input,
+        report_dir,
         json,
         text: text.join(" "),
+    }
+}
+
+fn parse_compare_prompt_input(value: &str) -> Option<ComparePromptInput> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "raw" | "raw-only" | "transcript" | "none" | "off" => Some(ComparePromptInput::RawOnly),
+        "both" | "preprocessed" | "raw+preprocessed" | "with-preprocessed" | "default" => {
+            Some(ComparePromptInput::RawAndPreprocessed)
+        }
+        _ => None,
     }
 }
 
@@ -1403,10 +1687,11 @@ fn push_model_values(models: &mut Vec<String>, value: &str) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct FormatCompareResult {
     name: String,
     elapsed_ms: u128,
+    metrics: ResourceMetrics,
     output: Option<String>,
     error: Option<String>,
 }
@@ -1415,10 +1700,694 @@ fn format_compare_result_json(result: &FormatCompareResult) -> serde_json::Value
     serde_json::json!({
         "name": result.name,
         "elapsed_ms": result.elapsed_ms,
+        "metrics": metrics_json(&result.metrics),
         "ok": result.error.is_none(),
         "output": result.output,
         "error": result.error,
     })
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ResourceMetrics {
+    samples: usize,
+    avg_cpu_percent: Option<f64>,
+    avg_ram_used_bytes: Option<u64>,
+    avg_gpu_percent: Option<f64>,
+    avg_vram_used_bytes: Option<u64>,
+    vram_total_bytes: Option<u64>,
+    avg_gpu_power_watts: Option<f64>,
+    avg_gpu_temp_celsius: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResourceAccumulator {
+    samples: usize,
+    cpu_sum: f64,
+    cpu_count: usize,
+    ram_sum: u128,
+    ram_count: usize,
+    gpu_sum: f64,
+    gpu_count: usize,
+    vram_sum: u128,
+    vram_count: usize,
+    vram_total_bytes: Option<u64>,
+    power_sum: f64,
+    power_count: usize,
+    temp_sum: f64,
+    temp_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResourceSample {
+    cpu_percent: Option<f64>,
+    ram_used_bytes: Option<u64>,
+    gpu_percent: Option<f64>,
+    vram_used_bytes: Option<u64>,
+    vram_total_bytes: Option<u64>,
+    gpu_power_watts: Option<f64>,
+    gpu_temp_celsius: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CpuTimes {
+    idle: u64,
+    total: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HardwareSnapshot {
+    os: Option<String>,
+    kernel: Option<String>,
+    cpu_model: Option<String>,
+    ram_total_bytes: Option<u64>,
+    gpu: Option<GpuHardware>,
+    ollama_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GpuHardware {
+    card: String,
+    pci_bus: Option<String>,
+    name: Option<String>,
+    vendor_id: Option<String>,
+    device_id: Option<String>,
+    vram_total_bytes: Option<u64>,
+    gtt_total_bytes: Option<u64>,
+    current_sclk_mhz: Option<u64>,
+    current_mclk_mhz: Option<u64>,
+    temperature_celsius: Option<f64>,
+    power_watts: Option<f64>,
+    device_path: PathBuf,
+    hwmon_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct GpuProbe {
+    card: String,
+    device_path: PathBuf,
+    hwmon_path: Option<PathBuf>,
+}
+
+impl ResourceAccumulator {
+    fn add(&mut self, sample: ResourceSample) {
+        self.samples += 1;
+
+        if let Some(value) = sample.cpu_percent {
+            self.cpu_sum += value;
+            self.cpu_count += 1;
+        }
+
+        if let Some(value) = sample.ram_used_bytes {
+            self.ram_sum += value as u128;
+            self.ram_count += 1;
+        }
+
+        if let Some(value) = sample.gpu_percent {
+            self.gpu_sum += value;
+            self.gpu_count += 1;
+        }
+
+        if let Some(value) = sample.vram_used_bytes {
+            self.vram_sum += value as u128;
+            self.vram_count += 1;
+        }
+
+        if sample.vram_total_bytes.is_some() {
+            self.vram_total_bytes = sample.vram_total_bytes;
+        }
+
+        if let Some(value) = sample.gpu_power_watts {
+            self.power_sum += value;
+            self.power_count += 1;
+        }
+
+        if let Some(value) = sample.gpu_temp_celsius {
+            self.temp_sum += value;
+            self.temp_count += 1;
+        }
+    }
+
+    fn finish(self) -> ResourceMetrics {
+        ResourceMetrics {
+            samples: self.samples,
+            avg_cpu_percent: average_f64(self.cpu_sum, self.cpu_count),
+            avg_ram_used_bytes: average_u64(self.ram_sum, self.ram_count),
+            avg_gpu_percent: average_f64(self.gpu_sum, self.gpu_count),
+            avg_vram_used_bytes: average_u64(self.vram_sum, self.vram_count),
+            vram_total_bytes: self.vram_total_bytes,
+            avg_gpu_power_watts: average_f64(self.power_sum, self.power_count),
+            avg_gpu_temp_celsius: average_f64(self.temp_sum, self.temp_count),
+        }
+    }
+}
+
+fn average_f64(sum: f64, count: usize) -> Option<f64> {
+    (count > 0).then_some(sum / count as f64)
+}
+
+fn average_u64(sum: u128, count: usize) -> Option<u64> {
+    (count > 0).then_some((sum / count as u128) as u64)
+}
+
+fn run_with_resource_sampling<T>(operation: impl FnOnce() -> T) -> (T, ResourceMetrics) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let sampler_stop = Arc::clone(&stop);
+    let probe = detect_primary_gpu();
+    let sampler = thread::spawn(move || sample_resources_until(sampler_stop, probe));
+    let result = operation();
+
+    stop.store(true, Ordering::SeqCst);
+    let metrics = sampler.join().unwrap_or_default();
+
+    (result, metrics)
+}
+
+fn sample_resources_until(stop: Arc<AtomicBool>, probe: Option<GpuProbe>) -> ResourceMetrics {
+    let mut accumulator = ResourceAccumulator::default();
+    let mut previous_cpu = read_cpu_times();
+
+    while !stop.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(250));
+        let sample = read_resource_sample(&mut previous_cpu, probe.as_ref());
+        accumulator.add(sample);
+    }
+
+    accumulator.finish()
+}
+
+fn read_resource_sample(
+    previous_cpu: &mut Option<CpuTimes>,
+    probe: Option<&GpuProbe>,
+) -> ResourceSample {
+    let cpu_percent = match (*previous_cpu, read_cpu_times()) {
+        (Some(previous), Some(current)) => {
+            *previous_cpu = Some(current);
+            cpu_usage_percent(previous, current)
+        }
+        (_, current) => {
+            *previous_cpu = current;
+            None
+        }
+    };
+    let (ram_used_bytes, _ram_total_bytes) = read_memory_usage();
+    let gpu_percent = probe.and_then(read_gpu_busy_percent);
+    let vram_used_bytes =
+        probe.and_then(|probe| read_u64_file(probe.device_path.join("mem_info_vram_used")));
+    let vram_total_bytes =
+        probe.and_then(|probe| read_u64_file(probe.device_path.join("mem_info_vram_total")));
+    let gpu_power_watts = probe.and_then(read_gpu_power_watts);
+    let gpu_temp_celsius = probe.and_then(read_gpu_temp_celsius);
+
+    ResourceSample {
+        cpu_percent,
+        ram_used_bytes,
+        gpu_percent,
+        vram_used_bytes,
+        vram_total_bytes,
+        gpu_power_watts,
+        gpu_temp_celsius,
+    }
+}
+
+fn read_cpu_times() -> Option<CpuTimes> {
+    let content = fs::read_to_string("/proc/stat").ok()?;
+    let line = content.lines().find(|line| line.starts_with("cpu "))?;
+    let values = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse::<u64>().ok())
+        .collect::<Vec<_>>();
+
+    if values.len() < 4 {
+        return None;
+    }
+
+    let idle = values.get(3).copied().unwrap_or(0) + values.get(4).copied().unwrap_or(0);
+    let total = values.iter().sum();
+
+    Some(CpuTimes { idle, total })
+}
+
+fn cpu_usage_percent(previous: CpuTimes, current: CpuTimes) -> Option<f64> {
+    let total = current.total.checked_sub(previous.total)?;
+    let idle = current.idle.checked_sub(previous.idle)?;
+
+    if total == 0 {
+        return None;
+    }
+
+    Some(((total - idle) as f64 / total as f64) * 100.0)
+}
+
+fn read_memory_usage() -> (Option<u64>, Option<u64>) {
+    let content = match fs::read_to_string("/proc/meminfo") {
+        Ok(content) => content,
+        Err(_) => return (None, None),
+    };
+    let total = meminfo_bytes(&content, "MemTotal:");
+    let available = meminfo_bytes(&content, "MemAvailable:");
+    let used = match (total, available) {
+        (Some(total), Some(available)) => total.checked_sub(available),
+        _ => None,
+    };
+
+    (used, total)
+}
+
+fn meminfo_bytes(content: &str, key: &str) -> Option<u64> {
+    let line = content.lines().find(|line| line.starts_with(key))?;
+    let kib = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+
+    Some(kib * 1024)
+}
+
+fn detect_primary_gpu() -> Option<GpuProbe> {
+    let entries = fs::read_dir("/sys/class/drm").ok()?;
+    let mut cards = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let number = name.strip_prefix("card")?;
+            if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+                return None;
+            }
+            Some((name, entry.path().join("device")))
+        })
+        .collect::<Vec<_>>();
+    cards.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (card, device_path) in cards {
+        let vendor = read_string_file(device_path.join("vendor")).unwrap_or_default();
+        if vendor.trim() != "0x1002" && !device_path.join("gpu_busy_percent").exists() {
+            continue;
+        }
+
+        return Some(GpuProbe {
+            card,
+            hwmon_path: detect_gpu_hwmon(&device_path),
+            device_path,
+        });
+    }
+
+    None
+}
+
+fn detect_gpu_hwmon(device_path: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(device_path.join("hwmon")).ok()?;
+
+    entries.flatten().map(|entry| entry.path()).find(|path| {
+        read_string_file(path.join("name"))
+            .map(|name| name.trim() == "amdgpu")
+            .unwrap_or(false)
+    })
+}
+
+fn read_gpu_busy_percent(probe: &GpuProbe) -> Option<f64> {
+    read_u64_file(probe.device_path.join("gpu_busy_percent")).map(|value| value as f64)
+}
+
+fn read_gpu_power_watts(probe: &GpuProbe) -> Option<f64> {
+    let hwmon = probe.hwmon_path.as_ref()?;
+    read_u64_file(hwmon.join("power1_average"))
+        .or_else(|| read_u64_file(hwmon.join("power1_input")))
+        .map(|microwatts| microwatts as f64 / 1_000_000.0)
+}
+
+fn read_gpu_temp_celsius(probe: &GpuProbe) -> Option<f64> {
+    let hwmon = probe.hwmon_path.as_ref()?;
+    read_u64_file(hwmon.join("temp1_input")).map(|millicelsius| millicelsius as f64 / 1000.0)
+}
+
+fn collect_hardware_snapshot(ollama_command: &str) -> HardwareSnapshot {
+    HardwareSnapshot {
+        os: os_pretty_name(),
+        kernel: command_stdout("uname", &["-r"]).map(|value| value.trim().to_string()),
+        cpu_model: cpu_model_name(),
+        ram_total_bytes: read_memory_usage().1,
+        gpu: collect_gpu_hardware(),
+        ollama_models: list_ollama_models(ollama_command)
+            .map(|models| models.into_iter().map(|model| model.name).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn collect_gpu_hardware() -> Option<GpuHardware> {
+    let probe = detect_primary_gpu()?;
+    let pci_bus = fs::canonicalize(&probe.device_path).ok().and_then(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+    });
+
+    Some(GpuHardware {
+        card: probe.card.clone(),
+        pci_bus: pci_bus.clone(),
+        name: pci_bus.as_deref().and_then(gpu_name_from_lspci),
+        vendor_id: read_string_file(probe.device_path.join("vendor"))
+            .map(|value| value.trim().to_string()),
+        device_id: read_string_file(probe.device_path.join("device"))
+            .map(|value| value.trim().to_string()),
+        vram_total_bytes: read_u64_file(probe.device_path.join("mem_info_vram_total")),
+        gtt_total_bytes: read_u64_file(probe.device_path.join("mem_info_gtt_total")),
+        current_sclk_mhz: active_dpm_mhz(&probe.device_path.join("pp_dpm_sclk")),
+        current_mclk_mhz: active_dpm_mhz(&probe.device_path.join("pp_dpm_mclk")),
+        temperature_celsius: read_gpu_temp_celsius(&probe),
+        power_watts: read_gpu_power_watts(&probe),
+        device_path: probe.device_path,
+        hwmon_path: probe.hwmon_path,
+    })
+}
+
+fn os_pretty_name() -> Option<String> {
+    let content = fs::read_to_string("/etc/os-release").ok()?;
+    let value = content
+        .lines()
+        .find_map(|line| line.strip_prefix("PRETTY_NAME="))?;
+
+    Some(value.trim_matches('"').to_string())
+}
+
+fn cpu_model_name() -> Option<String> {
+    let content = fs::read_to_string("/proc/cpuinfo").ok()?;
+    content.lines().find_map(|line| {
+        line.strip_prefix("model name").and_then(|value| {
+            value
+                .split_once(':')
+                .map(|(_, name)| name.trim().to_string())
+        })
+    })
+}
+
+fn gpu_name_from_lspci(pci_bus: &str) -> Option<String> {
+    let output = command_stdout("lspci", &["-D"])?;
+    output
+        .lines()
+        .find(|line| line.starts_with(pci_bus))
+        .map(|line| line.to_string())
+}
+
+fn active_dpm_mhz(path: &Path) -> Option<u64> {
+    let content = fs::read_to_string(path).ok()?;
+    let line = content.lines().find(|line| line.contains('*'))?;
+    let mhz = line.split_whitespace().find(|part| part.ends_with("Mhz"))?;
+
+    mhz.trim_end_matches("Mhz").parse().ok()
+}
+
+fn command_stdout(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn read_u64_file(path: impl AsRef<Path>) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn read_string_file(path: impl AsRef<Path>) -> Option<String> {
+    fs::read_to_string(path).ok()
+}
+
+fn metrics_json(metrics: &ResourceMetrics) -> serde_json::Value {
+    serde_json::json!({
+        "samples": metrics.samples,
+        "avg_cpu_percent": metrics.avg_cpu_percent,
+        "avg_ram_used_bytes": metrics.avg_ram_used_bytes,
+        "avg_gpu_percent": metrics.avg_gpu_percent,
+        "avg_vram_used_bytes": metrics.avg_vram_used_bytes,
+        "vram_total_bytes": metrics.vram_total_bytes,
+        "avg_gpu_power_watts": metrics.avg_gpu_power_watts,
+        "avg_gpu_temp_celsius": metrics.avg_gpu_temp_celsius,
+    })
+}
+
+fn hardware_json(hardware: &HardwareSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "os": hardware.os.as_deref(),
+        "kernel": hardware.kernel.as_deref(),
+        "cpu_model": hardware.cpu_model.as_deref(),
+        "ram_total_bytes": hardware.ram_total_bytes,
+        "gpu": hardware.gpu.as_ref().map(|gpu| serde_json::json!({
+            "card": gpu.card.as_str(),
+            "pci_bus": gpu.pci_bus.as_deref(),
+            "name": gpu.name.as_deref(),
+            "vendor_id": gpu.vendor_id.as_deref(),
+            "device_id": gpu.device_id.as_deref(),
+            "vram_total_bytes": gpu.vram_total_bytes,
+            "gtt_total_bytes": gpu.gtt_total_bytes,
+            "current_sclk_mhz": gpu.current_sclk_mhz,
+            "current_mclk_mhz": gpu.current_mclk_mhz,
+            "temperature_celsius": gpu.temperature_celsius,
+            "power_watts": gpu.power_watts,
+            "device_path": gpu.device_path.display().to_string(),
+            "hwmon_path": gpu.hwmon_path.as_ref().map(|path| path.display().to_string()),
+        })),
+        "ollama_models": hardware.ollama_models.as_slice(),
+    })
+}
+
+fn write_format_compare_report(
+    directory: &Path,
+    hardware: &HardwareSnapshot,
+    mode: DictationMode,
+    prompt_input: ComparePromptInput,
+    raw_transcript: &str,
+    preprocessed: &str,
+    results: &[FormatCompareResult],
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(directory).map_err(|source| {
+        format!(
+            "failed to create report directory {}: {source}",
+            directory.display()
+        )
+    })?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let path = directory.join(format!("chirper-format-compare-{timestamp}.txt"));
+    let mut report = String::new();
+
+    let _ = writeln!(report, "Chirper format comparison");
+    let _ = writeln!(report, "generated_unix_seconds: {timestamp}");
+    let _ = writeln!(report, "mode: {mode:?}");
+    let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
+    let _ = writeln!(report);
+    let _ = writeln!(report, "Hardware:");
+    write_hardware_snapshot(&mut report, hardware);
+    let _ = writeln!(report);
+    let _ = writeln!(report, "Raw transcript:");
+    let _ = writeln!(report, "{raw_transcript}");
+    let _ = writeln!(report);
+    if prompt_input == ComparePromptInput::RawAndPreprocessed {
+        let _ = writeln!(report, "Preprocessed draft (sent to model):");
+    } else {
+        let _ = writeln!(report, "Preprocessed draft (not sent to model):");
+    }
+    let _ = writeln!(report, "{preprocessed}");
+
+    for result in results {
+        let _ = writeln!(report);
+        let _ = writeln!(
+            report,
+            "=== {} ({}, {}) ===",
+            result.name,
+            format_elapsed(result.elapsed_ms),
+            format_metrics_summary(&result.metrics)
+        );
+        if let Some(output) = &result.output {
+            let _ = writeln!(report, "{output}");
+        } else if let Some(error) = &result.error {
+            let _ = writeln!(report, "ERROR: {error}");
+        }
+    }
+
+    fs::write(&path, report)
+        .map_err(|source| format!("failed to write report {}: {source}", path.display()))?;
+
+    Ok(path)
+}
+
+fn print_hardware_snapshot(hardware: &HardwareSnapshot) {
+    let mut output = String::new();
+    write_hardware_snapshot(&mut output, hardware);
+    print!("{output}");
+}
+
+fn write_hardware_snapshot(output: &mut String, hardware: &HardwareSnapshot) {
+    let _ = writeln!(
+        output,
+        "  os: {}",
+        hardware.os.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        output,
+        "  kernel: {}",
+        hardware.kernel.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        output,
+        "  cpu: {}",
+        hardware.cpu_model.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        output,
+        "  ram_total: {}",
+        format_optional_bytes(hardware.ram_total_bytes)
+    );
+
+    if let Some(gpu) = &hardware.gpu {
+        let _ = writeln!(output, "  gpu_card: {}", gpu.card);
+        if let Some(name) = &gpu.name {
+            let _ = writeln!(output, "  gpu_name: {name}");
+        }
+        if let Some(pci_bus) = &gpu.pci_bus {
+            let _ = writeln!(output, "  gpu_pci_bus: {pci_bus}");
+        }
+        if let Some(vendor_id) = &gpu.vendor_id {
+            let _ = writeln!(output, "  gpu_vendor_id: {vendor_id}");
+        }
+        if let Some(device_id) = &gpu.device_id {
+            let _ = writeln!(output, "  gpu_device_id: {device_id}");
+        }
+        let _ = writeln!(
+            output,
+            "  gpu_vram_total: {}",
+            format_optional_bytes(gpu.vram_total_bytes)
+        );
+        let _ = writeln!(
+            output,
+            "  gpu_gtt_total: {}",
+            format_optional_bytes(gpu.gtt_total_bytes)
+        );
+        let _ = writeln!(
+            output,
+            "  gpu_sclk: {}",
+            format_optional_mhz(gpu.current_sclk_mhz)
+        );
+        let _ = writeln!(
+            output,
+            "  gpu_mclk: {}",
+            format_optional_mhz(gpu.current_mclk_mhz)
+        );
+        let _ = writeln!(
+            output,
+            "  gpu_power_now: {}",
+            format_optional_watts(gpu.power_watts)
+        );
+        let _ = writeln!(
+            output,
+            "  gpu_temp_now: {}",
+            format_optional_celsius(gpu.temperature_celsius)
+        );
+        let _ = writeln!(output, "  gpu_device_path: {}", gpu.device_path.display());
+        if let Some(hwmon_path) = &gpu.hwmon_path {
+            let _ = writeln!(output, "  gpu_hwmon_path: {}", hwmon_path.display());
+        }
+    } else {
+        let _ = writeln!(output, "  gpu: unavailable");
+    }
+
+    if hardware.ollama_models.is_empty() {
+        let _ = writeln!(output, "  ollama_models: none detected");
+    } else {
+        let _ = writeln!(
+            output,
+            "  ollama_models: {}",
+            hardware.ollama_models.join(", ")
+        );
+    }
+}
+
+fn format_metrics_summary(metrics: &ResourceMetrics) -> String {
+    if metrics.samples == 0 {
+        return "telemetry unavailable".to_string();
+    }
+
+    let mut parts = Vec::new();
+    parts.push(format!("samples {}", metrics.samples));
+
+    if let Some(value) = metrics.avg_cpu_percent {
+        parts.push(format!("cpu {:.1}%", value));
+    }
+    if let Some(value) = metrics.avg_ram_used_bytes {
+        parts.push(format!("ram {}", format_bytes_decimal(value)));
+    }
+    if let Some(value) = metrics.avg_gpu_percent {
+        parts.push(format!("gpu {:.1}%", value));
+    }
+    if let Some(value) = metrics.avg_vram_used_bytes {
+        let vram = match metrics.vram_total_bytes {
+            Some(total) => format!(
+                "{}/{}",
+                format_bytes_decimal(value),
+                format_bytes_decimal(total)
+            ),
+            None => format_bytes_decimal(value),
+        };
+        parts.push(format!("vram {vram}"));
+    }
+    if let Some(value) = metrics.avg_gpu_power_watts {
+        parts.push(format!("gpu power {:.0} W", value));
+    }
+    if let Some(value) = metrics.avg_gpu_temp_celsius {
+        parts.push(format!("gpu temp {:.0} C", value));
+    }
+
+    if parts.len() == 1 {
+        "telemetry unavailable".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn format_optional_bytes(value: Option<u64>) -> String {
+    value
+        .map(format_bytes_decimal)
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_optional_mhz(value: Option<u64>) -> String {
+    value
+        .map(|value| format!("{value} MHz"))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_optional_watts(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.0} W"))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_optional_celsius(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.0} C"))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_bytes_decimal(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes = bytes as f64;
+
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else {
+        format!("{bytes:.0} B")
+    }
 }
 
 fn format_elapsed(elapsed_ms: u128) -> String {

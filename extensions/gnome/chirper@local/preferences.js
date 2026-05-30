@@ -139,6 +139,7 @@ class ChirperPreferencesBuilder {
         this._settings = settings;
         this._runtime = loadJsonFile(GLib.build_filenamev([extensionPath, 'runtime.json']));
         this._audioRows = [];
+        this._languageRows = [];
         this._installedRows = [];
         this._downloadRows = [];
         this._ollamaRows = [];
@@ -195,6 +196,30 @@ class ChirperPreferencesBuilder {
             title: 'Available Inputs',
         });
         page.add(this._audioInputsGroup);
+
+        const languageGroup = new Adw.PreferencesGroup({
+            title: 'Transcription Language',
+            description: 'Force the language passed to whisper.cpp. Auto detection can be unreliable for multilingual conversations.',
+        });
+        page.add(languageGroup);
+
+        this._currentLanguageRow = new Adw.ActionRow({
+            title: 'Current Language',
+            subtitle: 'Loading',
+        });
+        languageGroup.add(this._currentLanguageRow);
+
+        const refreshLanguageRow = new Adw.ActionRow({
+            title: 'Refresh Languages',
+            subtitle: 'Reload common whisper.cpp language options.',
+        });
+        addButton(refreshLanguageRow, 'Refresh', () => this._refreshLanguages());
+        languageGroup.add(refreshLanguageRow);
+
+        this._languagesGroup = new Adw.PreferencesGroup({
+            title: 'Languages',
+        });
+        page.add(this._languagesGroup);
 
         const daemonGroup = new Adw.PreferencesGroup({
             title: 'Daemon',
@@ -292,6 +317,7 @@ class ChirperPreferencesBuilder {
         page.add(this._ollamaModelsGroup);
 
         this._refreshAudioInputs();
+        this._refreshLanguages();
         this._refreshModels();
         this._refreshOllama();
     }
@@ -346,6 +372,51 @@ class ChirperPreferencesBuilder {
             await this._refreshAudioInputs();
         } catch (error) {
             this._currentAudioRow.subtitle = error.message;
+        }
+    }
+
+    async _refreshLanguages() {
+        this._currentLanguageRow.subtitle = 'Loading';
+        this._clearRows(this._languagesGroup, this._languageRows);
+
+        try {
+            const output = await this._runCli(['language-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current ?? {};
+            const languages = data.languages ?? [];
+
+            this._currentLanguageRow.subtitle = current.label ?? current.code ?? 'Auto detect';
+
+            for (const language of languages) {
+                const selected = Boolean(language.selected);
+                const row = new Adw.ActionRow({
+                    title: language.label ?? language.code,
+                    subtitle: language.code,
+                });
+                addButton(row, selected ? 'Selected' : 'Use', () => this._selectLanguage(language.code), {
+                    sensitive: !selected,
+                    suggested: language.code === 'id',
+                });
+                this._languagesGroup.add(row);
+                this._languageRows.push(row);
+            }
+
+            if (languages.length === 0)
+                this._addInfoRow(this._languagesGroup, this._languageRows, 'No language options available');
+        } catch (error) {
+            this._currentLanguageRow.subtitle = 'Language controls unavailable';
+            this._addInfoRow(this._languagesGroup, this._languageRows, error.message);
+        }
+    }
+
+    async _selectLanguage(language) {
+        this._currentLanguageRow.subtitle = `Selecting ${language}`;
+
+        try {
+            await this._runCli(['language-use', language]);
+            await this._refreshLanguages();
+        } catch (error) {
+            this._currentLanguageRow.subtitle = error.message;
         }
     }
 
