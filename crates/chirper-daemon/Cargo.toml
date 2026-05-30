@@ -1,0 +1,19 @@
+[package]
+name = "chirper-daemon"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "chirper-daemon"
+path = "src/main.rs"
+
+[dependencies]
+chirper-api = { path = "../chirper-api" }
+chirper-asr-whispercpp = { path = "../chirper-asr-whispercpp" }
+chirper-audio-pipewire = { path = "../chirper-audio-pipewire" }
+chirper-core = { path = "../chirper-core" }
+chirper-formatter-rules = { path = "../chirper-formatter-rules" }
+chirper-insertion-clipboard = { path = "../chirper-insertion-clipboard" }
+serde_json = "1.0.145"

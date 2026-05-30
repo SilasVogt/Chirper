@@ -1,0 +1,105 @@
+# Development
+
+## Prerequisites
+
+The initial scaffold is a Rust workspace. Install a Rust toolchain before building:
+
+```sh
+rustup default stable
+```
+
+Then verify the scaffold:
+
+```sh
+cargo fmt --all -- --check
+cargo check --workspace
+cargo run -p chirper-cli -- status
+cargo run -p chirper-cli -- diagnose
+cargo run -p chirper-cli -- copy-test "hello from chirper"
+cargo run -p chirper-cli -- format-test "hello comma world period"
+cargo run -p chirper-cli -- format-test --mode code "user at host colon path slash file dot rs"
+cargo run -p chirper-cli -- dictate-test 3
+```
+
+To smoke-test PipeWire microphone capture:
+
+```sh
+cargo run -p chirper-cli -- record-test 3
+```
+
+To smoke-test a whisper.cpp transcription once `whisper-cli` and a model are available:
+
+```sh
+cargo run -p chirper-cli -- transcribe-file /path/to/audio.wav /path/to/ggml-base.bin
+```
+
+To smoke-test the first end-to-end local loop:
+
+```sh
+cargo run -p chirper-cli -- dictate-test 3
+```
+
+This records for three seconds, transcribes through the configured whisper.cpp backend, and copies the transcript to the clipboard.
+
+To test the toggle flow:
+
+```sh
+cargo run -p chirper-cli -- toggle
+# speak
+cargo run -p chirper-cli -- toggle
+```
+
+The first invocation starts recording. The second stops recording, transcribes, and copies the transcript to the clipboard.
+
+To run the daemon and exercise the local API:
+
+```sh
+cargo run -p chirper-daemon
+```
+
+In a second terminal:
+
+```sh
+cargo run -p chirper-cli -- daemon-status
+cargo run -p chirper-cli -- daemon-toggle
+# speak
+cargo run -p chirper-cli -- daemon-toggle
+cargo run -p chirper-cli -- daemon-shutdown
+```
+
+To install and start the daemon as a user systemd service:
+
+```sh
+scripts/install-systemd-user-service.sh
+```
+
+To install the GNOME Shell extension development copy:
+
+```sh
+scripts/install-gnome-extension.sh
+gnome-extensions enable chirper@local
+```
+
+On Wayland, log out and back in after first install or changing extension code.
+
+To build whisper.cpp locally after installing CMake:
+
+```sh
+scripts/setup-whispercpp.sh --backend vulkan --model base
+```
+
+## First Implementation Target
+
+The first real behavior should be the local loop:
+
+```text
+chirper toggle
+  start recording through PipeWire
+
+chirper toggle
+  stop recording
+  transcribe through whisper.cpp
+  insert through clipboard or uinput
+```
+
+Keep this loop behind the core backend traits so GNOME, KDE, and window-manager frontends can all reuse the same daemon.

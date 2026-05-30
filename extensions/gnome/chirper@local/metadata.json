@@ -1,0 +1,9 @@
+{
+  "uuid": "chirper@local",
+  "name": "Chirper",
+  "description": "GNOME Shell controls and recording overlay for the Chirper daemon.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.chirper",
+  "url": "https://github.com/chirper/chirper",
+  "session-modes": ["user"]
+}

@@ -1,0 +1,33 @@
+# Chirper config example.
+# Default path: ~/.config/chirper/config.toml
+
+audio_backend = "pipewire"
+asr_backend = "whisper-cpp"
+
+# Start with "auto". On AMD, useful explicit values are "rocm" and "vulkan".
+gpu_backend = "auto"
+
+# Local rule formatting handles spoken punctuation and simple structure before
+# any future LLM formatter.
+formatter_backend = "rules"
+
+# Initial insertion backends will be "clipboard" and "uinput".
+insertion_backend = "clipboard"
+
+# Modes change how aggressive local symbol rules are. Auto is conservative;
+# code/command convert ambiguous words like "dot", "at", "space", and "pipe".
+dictation_mode = "auto"
+
+whisper_model = "base"
+
+# The wrapper expects whisper.cpp's CLI. The current upstream binary is usually
+# named "whisper-cli" after building whisper.cpp.
+whispercpp_command = "whisper-cli"
+
+# Configure this before using `chirper transcribe-file` or the full dictation
+# loop. Example:
+# whispercpp_model_path = "/home/silas/.local/share/chirper/models/ggml-base.bin"
+whispercpp_model_path = ""
+
+# Empty or "auto" lets whisper.cpp choose. Use "en", "de", etc. to force one.
+whisper_language = "auto"

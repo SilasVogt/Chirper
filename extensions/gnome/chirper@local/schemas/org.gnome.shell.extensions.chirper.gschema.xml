@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.chirper" path="/org/gnome/shell/extensions/chirper/">
+    <key name="toggle-recording" type="as">
+      <default>['&lt;Ctrl&gt;&lt;Alt&gt;space']</default>
+      <summary>Toggle recording shortcut</summary>
+      <description>Keyboard shortcut used by the GNOME Shell extension to start recording or stop and paste.</description>
+    </key>
+    <key name="paste-after-stop" type="b">
+      <default>true</default>
+      <summary>Paste after stopping recording</summary>
+      <description>When enabled, stopping a recording from the extension restores the previous window and sends a paste shortcut after the daemon copies the transcript.</description>
+    </key>
+  </schema>
+</schemalist>

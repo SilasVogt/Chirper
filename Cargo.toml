@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/chirper-audio-pipewire",
+    "crates/chirper-api",
+    "crates/chirper-asr-whispercpp",
+    "crates/chirper-cli",
+    "crates/chirper-core",
+    "crates/chirper-daemon",
+    "crates/chirper-formatter-rules",
+    "crates/chirper-insertion-clipboard",
+    "crates/chirper-platform",
+    "crates/chirper-workflow",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/chirper/chirper"

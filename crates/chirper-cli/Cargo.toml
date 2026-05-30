@@ -1,0 +1,20 @@
+[package]
+name = "chirper-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "chirper"
+path = "src/main.rs"
+
+[dependencies]
+chirper-api = { path = "../chirper-api" }
+chirper-audio-pipewire = { path = "../chirper-audio-pipewire" }
+chirper-asr-whispercpp = { path = "../chirper-asr-whispercpp" }
+chirper-core = { path = "../chirper-core" }
+chirper-formatter-rules = { path = "../chirper-formatter-rules" }
+chirper-insertion-clipboard = { path = "../chirper-insertion-clipboard" }
+chirper-platform = { path = "../chirper-platform" }
+libc = "0.2.186"

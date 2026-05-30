@@ -1,0 +1,54 @@
+.chirper-recording-overlay {
+  background-color: rgba(36, 36, 36, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 16px 22px;
+  spacing: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+.chirper-primary-item {
+  padding: 10px 12px;
+  spacing: 10px;
+}
+
+.chirper-primary-icon {
+  icon-size: 22px;
+}
+
+.chirper-primary-title {
+  font-weight: 700;
+}
+
+.chirper-primary-subtitle {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 11px;
+}
+
+.chirper-shortcut {
+  background-color: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  margin-left: 14px;
+  padding: 3px 7px;
+}
+
+.chirper-overlay-icon {
+  icon-size: 28px;
+  color: #ffffff;
+}
+
+.chirper-overlay-label {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.chirper-panel-recording {
+  color: #ff6b6b;
+}
+
+.chirper-panel-processing {
+  color: #f6c177;
+}

@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+*.shell-extension.zip
+extensions/gnome/*/schemas/gschemas.compiled
+
+# Local runtime data
+/.chirper/
+*.wav
+*.log

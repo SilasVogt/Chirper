@@ -1,0 +1,93 @@
+# Architecture
+
+Chirper should feel native on GNOME first, but the core product is the daemon. Frontends call the daemon; they do not own audio capture, transcription, formatting, or text insertion.
+
+## Goals
+
+- Run primarily locally.
+- Prefer AMD-friendly inference paths first.
+- Keep desktop integration replaceable.
+- Make new frontends easy to add without touching the dictation pipeline.
+- Make backend support incremental and testable on one machine at a time.
+
+## Process Model
+
+```text
+chirper-daemon
+  Owns workflow state.
+  Captures audio.
+  Runs ASR and optional formatting.
+  Inserts text through the selected backend.
+  Exposes the local frontend API.
+
+chirper-cli
+  Debug and scripting client.
+  Can use either standalone debug paths or the daemon API.
+
+GNOME Shell extension
+  Optional shell integration.
+  Provides recording overlay, menu, shortcut, and settings launcher.
+  Talks to daemon over D-Bus once that adapter exists.
+
+GTK/libadwaita settings app
+  Optional settings frontend.
+  Edits config, models, dictionaries, snippets, and diagnostics.
+  Talks to daemon over D-Bus or config service methods.
+```
+
+The first implemented daemon API is newline-delimited JSON over a Unix socket at
+`$XDG_RUNTIME_DIR/chirper/daemon.sock`. See [Local API](API.md). D-Bus remains
+the intended GNOME-facing adapter, but it should map to the same daemon commands
+instead of creating a parallel control surface.
+
+## Workflow State
+
+```text
+Idle
+  -> Recording
+  -> Transcribing
+  -> Formatting
+  -> Inserting
+  -> Idle
+```
+
+Errors should return to `Idle` after being surfaced to the active frontend.
+
+## Backend Contracts
+
+Backends should be swappable behind narrow interfaces:
+
+- `AudioSource`: start and stop capture, returning audio data or a recording path.
+- `AsrEngine`: turn captured audio into a transcript.
+- `Formatter`: optionally clean, rewrite, or style the transcript.
+- `InsertionBackend`: insert final text into the focused application.
+- `HotkeyBackend`: optional frontend-side trigger source.
+
+The first implementation can be direct and in-process. A later external plugin API can wrap these same concepts through subprocesses or D-Bus once the contracts settle.
+
+## Initial Backend Choices
+
+| Area | First backend | Later backends |
+| --- | --- | --- |
+| Audio | PipeWire | file input for tests |
+| ASR | whisper.cpp | faster-whisper, remote API adapters |
+| GPU | ROCm/Vulkan/CPU selection | CUDA, OpenVINO |
+| Formatting | none | Ollama, llama.cpp |
+| Insertion | clipboard, uinput | IBus, X11, wlroots-specific |
+| GNOME UI | CLI first, extension second | GTK settings app |
+
+## GNOME Strategy
+
+The GNOME Shell extension is intentionally thin. It should not run transcription or maintain independent workflow state. It should subscribe to daemon events and render shell-native UI:
+
+- hidden mode or top-bar indicator mode
+- recording overlay
+- processing state
+- quick mode switch
+- settings launcher
+
+The GTK/libadwaita app exists for settings and diagnostics, not as a permanently running app.
+
+## Contributor Boundaries
+
+Future contributors should be able to add a backend by implementing one contract and registering it in the daemon. A new frontend should only need the public daemon API and event stream.
