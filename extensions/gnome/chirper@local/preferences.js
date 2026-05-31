@@ -146,6 +146,7 @@ class ChirperPreferencesBuilder {
         this._runtime = loadJsonFile(GLib.build_filenamev([extensionPath, 'runtime.json']));
         this._audioRows = [];
         this._languageRows = [];
+        this._transcriptionRows = [];
         this._installedRows = [];
         this._downloadRows = [];
         this._aiTierRows = [];
@@ -229,6 +230,30 @@ class ChirperPreferencesBuilder {
             title: 'Languages',
         });
         page.add(this._languagesGroup);
+
+        const transcriptionGroup = new Adw.PreferencesGroup({
+            title: 'Transcription Speed',
+            description: 'Choose whisper.cpp decoding behavior. Fast mode trades some accuracy and context for lower latency.',
+        });
+        page.add(transcriptionGroup);
+
+        this._currentTranscriptionRow = new Adw.ActionRow({
+            title: 'Current Profile',
+            subtitle: 'Loading',
+        });
+        transcriptionGroup.add(this._currentTranscriptionRow);
+
+        const refreshTranscriptionRow = new Adw.ActionRow({
+            title: 'Refresh Transcription Profiles',
+            subtitle: 'Reload the configured whisper.cpp transcription profile.',
+        });
+        addButton(refreshTranscriptionRow, 'Refresh', () => this._refreshTranscriptionProfiles());
+        transcriptionGroup.add(refreshTranscriptionRow);
+
+        this._transcriptionGroup = new Adw.PreferencesGroup({
+            title: 'Profiles',
+        });
+        page.add(this._transcriptionGroup);
 
         const daemonGroup = new Adw.PreferencesGroup({
             title: 'Daemon',
@@ -391,6 +416,7 @@ class ChirperPreferencesBuilder {
 
         this._refreshAudioInputs();
         this._refreshLanguages();
+        this._refreshTranscriptionProfiles();
         this._refreshModels();
         this._refreshAiFormatting();
         this._refreshOllama();
@@ -491,6 +517,52 @@ class ChirperPreferencesBuilder {
             await this._refreshLanguages();
         } catch (error) {
             this._currentLanguageRow.subtitle = error.message;
+        }
+    }
+
+    async _refreshTranscriptionProfiles() {
+        this._currentTranscriptionRow.subtitle = 'Loading';
+        this._clearRows(this._transcriptionGroup, this._transcriptionRows);
+
+        try {
+            const output = await this._runCli(['transcription-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current ?? {};
+            const profiles = data.profiles ?? [];
+
+            this._currentTranscriptionRow.subtitle =
+                `${current.label ?? current.profile ?? 'Balanced'} - ${current.description ?? ''}`;
+
+            for (const profile of profiles) {
+                const selected = Boolean(profile.selected);
+                const row = new Adw.ActionRow({
+                    title: profile.label ?? profile.name,
+                    subtitle: profile.description ?? profile.name,
+                });
+                addButton(row, selected ? 'Selected' : 'Use', () => this._selectTranscriptionProfile(profile.name), {
+                    sensitive: !selected,
+                    suggested: profile.name === 'fast',
+                });
+                this._transcriptionGroup.add(row);
+                this._transcriptionRows.push(row);
+            }
+
+            if (profiles.length === 0)
+                this._addInfoRow(this._transcriptionGroup, this._transcriptionRows, 'No transcription profiles available');
+        } catch (error) {
+            this._currentTranscriptionRow.subtitle = 'Transcription controls unavailable';
+            this._addInfoRow(this._transcriptionGroup, this._transcriptionRows, error.message);
+        }
+    }
+
+    async _selectTranscriptionProfile(profile) {
+        this._currentTranscriptionRow.subtitle = `Selecting ${profile}`;
+
+        try {
+            await this._runCli(['transcription-use', profile]);
+            await this._refreshTranscriptionProfiles();
+        } catch (error) {
+            this._currentTranscriptionRow.subtitle = error.message;
         }
     }
 

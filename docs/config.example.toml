@@ -12,6 +12,11 @@ pipewire_target = "auto"
 
 asr_backend = "whisper-cpp"
 
+# "balanced" keeps whisper.cpp's normal decoding behavior. "fast" uses fewer
+# decoder candidates, disables fallback retries, and drops text context for
+# lower stop-to-text latency.
+transcription_profile = "balanced"
+
 # Start with "auto". On AMD, useful explicit values are "rocm" and "vulkan".
 gpu_backend = "auto"
 

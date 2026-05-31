@@ -5,6 +5,7 @@ use std::{
 
 use chirper_core::{
     AsrEngine, CapturedAudio, ChirperConfig, ChirperError, ChirperResult, GpuBackend, Transcript,
+    TranscriptionProfile,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub struct WhisperCppOptions {
     pub command: String,
     pub model_path: PathBuf,
     pub language: Option<String>,
+    pub transcription_profile: TranscriptionProfile,
     pub gpu_backend: GpuBackend,
     pub extra_args: Vec<String>,
 }
@@ -28,6 +30,7 @@ impl WhisperCppOptions {
             command: config.whispercpp_command.clone(),
             model_path,
             language: config.whisper_language.clone(),
+            transcription_profile: config.transcription_profile,
             gpu_backend: config.gpu_backend,
             extra_args: Vec::new(),
         })
@@ -114,6 +117,18 @@ fn command_args(options: &WhisperCppOptions, audio_path: &Path) -> Vec<String> {
         args.push(language.clone());
     }
 
+    if options.transcription_profile == TranscriptionProfile::Fast {
+        args.extend([
+            "-nf".to_string(),
+            "-bo".to_string(),
+            "1".to_string(),
+            "-bs".to_string(),
+            "1".to_string(),
+            "-mc".to_string(),
+            "0".to_string(),
+        ]);
+    }
+
     args.extend(options.extra_args.clone());
     args
 }
@@ -136,6 +151,7 @@ mod tests {
             command: "whisper-cli".to_string(),
             model_path: PathBuf::from("/models/ggml-base.bin"),
             language: Some("en".to_string()),
+            transcription_profile: TranscriptionProfile::Balanced,
             gpu_backend: GpuBackend::Auto,
             extra_args: Vec::new(),
         }
@@ -168,6 +184,28 @@ mod tests {
         let args = command_args(&options, Path::new("/tmp/input.wav"));
 
         assert!(args.contains(&"-ng".to_string()));
+    }
+
+    #[test]
+    fn fast_profile_uses_lower_latency_decoder_args() {
+        let mut options = options();
+        options.transcription_profile = TranscriptionProfile::Fast;
+
+        let args = command_args(&options, Path::new("/tmp/input.wav"));
+
+        assert!(args.contains(&"-nf".to_string()));
+        assert_eq!(
+            args.windows(2).filter(|pair| *pair == ["-bo", "1"]).count(),
+            1
+        );
+        assert_eq!(
+            args.windows(2).filter(|pair| *pair == ["-bs", "1"]).count(),
+            1
+        );
+        assert_eq!(
+            args.windows(2).filter(|pair| *pair == ["-mc", "0"]).count(),
+            1
+        );
     }
 
     #[test]

@@ -339,6 +339,14 @@ export default class ChirperExtension extends Extension {
                 this._refreshAudioMenu();
         });
 
+        this._transcriptionMenu = new PopupMenu.PopupSubMenuMenuItem('Transcription');
+        this._indicator.menu.addMenuItem(this._transcriptionMenu);
+        this._transcriptionMenu.menu.addMenuItem(this._disabledItem('Loading profiles'));
+        this._transcriptionMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._refreshTranscriptionMenu();
+        });
+
         this._modelMenu = new PopupMenu.PopupSubMenuMenuItem('Whisper Model');
         this._indicator.menu.addMenuItem(this._modelMenu);
         this._modelMenu.menu.addMenuItem(this._disabledItem('Loading models'));
@@ -384,6 +392,7 @@ export default class ChirperExtension extends Extension {
         this._syncShortcutLabel();
         this._syncPrimaryAction();
         this._refreshAudioMenu();
+        this._refreshTranscriptionMenu();
         this._refreshModelMenu();
         this._refreshOllamaMenu();
     }
@@ -716,6 +725,56 @@ export default class ChirperExtension extends Extension {
             await this._refreshModelMenu();
         } catch (error) {
             Main.notify('Chirper', `Failed to download model: ${error.message}`);
+        }
+    }
+
+    async _refreshTranscriptionMenu() {
+        if (!this._transcriptionMenu)
+            return;
+
+        this._transcriptionMenu.menu.removeAll();
+
+        try {
+            const output = await this._runCli(['transcription-list', '--json']);
+            const data = JSON.parse(output);
+            const current = data.current?.profile ?? 'balanced';
+            const currentLabel = data.current?.label ?? current;
+            const profiles = data.profiles ?? [];
+
+            this._transcriptionMenu.label.text = `Transcription: ${currentLabel}`;
+            this._transcriptionMenu.menu.addMenuItem(
+                this._disabledItem(`Current: ${currentLabel}`)
+            );
+            this._transcriptionMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            for (const profile of profiles) {
+                const label = profile.selected
+                    ? `✓ ${profile.label ?? profile.name}`
+                    : `${profile.label ?? profile.name}`;
+                const item = new PopupMenu.PopupMenuItem(label);
+                item.connect('activate', () => {
+                    this._selectTranscriptionProfile(profile.name);
+                });
+                this._transcriptionMenu.menu.addMenuItem(item);
+            }
+        } catch (error) {
+            this._transcriptionMenu.label.text = 'Transcription';
+            this._transcriptionMenu.menu.addMenuItem(
+                this._disabledItem('Transcription controls unavailable')
+            );
+            this._transcriptionMenu.menu.addMenuItem(
+                this._disabledItem(shortLabel(error.message, MENU_ITEM_LABEL_MAX))
+            );
+        }
+    }
+
+    async _selectTranscriptionProfile(profile) {
+        try {
+            await this._runCli(['transcription-use', profile]);
+            Main.notify('Chirper', `Selected transcription profile: ${profile}`);
+            await this._refreshTranscriptionMenu();
+        } catch (error) {
+            Main.notify('Chirper', `Failed to select transcription profile: ${error.message}`);
         }
     }
 

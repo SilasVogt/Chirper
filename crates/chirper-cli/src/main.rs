@@ -18,8 +18,8 @@ use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     AiHardwareTier, AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig,
-    DictationMode, FormatterBackend, ServiceCommand, TextInserter, WorkflowState,
-    WHISPER_MODEL_NAMES,
+    DictationMode, FormatterBackend, ServiceCommand, TextInserter, TranscriptionProfile,
+    WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -74,7 +74,7 @@ fn main() {
     }
 
     if matches!(first.as_deref(), Some("transcribe-file")) {
-        transcribe_file(args.next(), args.next());
+        transcribe_file(args.collect());
         return;
     }
 
@@ -115,6 +115,30 @@ fn main() {
 
     if matches!(first.as_deref(), Some("language-use")) {
         language_use(args.next());
+        return;
+    }
+
+    if matches!(
+        first.as_deref(),
+        Some("transcription-current") | Some("transcription-profile-current")
+    ) {
+        transcription_current(args.collect());
+        return;
+    }
+
+    if matches!(
+        first.as_deref(),
+        Some("transcription-list") | Some("transcription-profile-list")
+    ) {
+        transcription_list(args.collect());
+        return;
+    }
+
+    if matches!(
+        first.as_deref(),
+        Some("transcription-use") | Some("transcription-profile-use")
+    ) {
+        transcription_use(args.next());
         return;
     }
 
@@ -354,9 +378,21 @@ fn record_test(seconds: Option<&str>) {
     println!("channels: {}", audio.channels);
 }
 
-fn transcribe_file(audio_path: Option<String>, model_path: Option<String>) {
+fn transcribe_file(args: Vec<String>) {
+    let (audio_path, model_path, profile) = match parse_transcribe_file_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!(
+                "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+            );
+            std::process::exit(1);
+        }
+    };
     let Some(audio_path) = audio_path else {
-        eprintln!("usage: chirper transcribe-file <audio.wav> [model.bin]");
+        eprintln!(
+            "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+        );
         std::process::exit(1);
     };
 
@@ -370,6 +406,10 @@ fn transcribe_file(audio_path: Option<String>, model_path: Option<String>) {
 
     if let Some(model_path) = model_path {
         config.whispercpp_model_path = Some(model_path.into());
+    }
+
+    if let Some(profile) = profile {
+        config.transcription_profile = profile;
     }
 
     let options = match WhisperCppOptions::from_config(&config) {
@@ -396,6 +436,55 @@ fn transcribe_file(audio_path: Option<String>, model_path: Option<String>) {
     };
 
     println!("{}", transcript.text);
+}
+
+fn parse_transcribe_file_args(
+    args: Vec<String>,
+) -> Result<(Option<String>, Option<String>, Option<TranscriptionProfile>), String> {
+    let mut profile = None;
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if arg == "--fast" {
+            profile = Some(TranscriptionProfile::Fast);
+            index += 1;
+        } else if arg == "--balanced" {
+            profile = Some(TranscriptionProfile::Balanced);
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--profile=") {
+            profile = Some(
+                parse_transcription_profile(value)
+                    .ok_or_else(|| format!("unknown transcription profile: {value}"))?,
+            );
+            index += 1;
+        } else if arg == "--profile" {
+            if let Some(value) = args.get(index + 1) {
+                profile = Some(
+                    parse_transcription_profile(value)
+                        .ok_or_else(|| format!("unknown transcription profile: {value}"))?,
+                );
+                index += 2;
+            } else {
+                return Err("--profile requires balanced or fast".to_string());
+            }
+        } else {
+            positional.push(arg.clone());
+            index += 1;
+        }
+    }
+
+    if positional.len() > 2 {
+        return Err("too many positional arguments".to_string());
+    }
+
+    Ok((
+        positional.first().cloned(),
+        positional.get(1).cloned(),
+        profile,
+    ))
 }
 
 fn diagnose() {
@@ -731,6 +820,103 @@ fn language_use(selection: Option<String>) {
     println!("selected whisper language: {code}");
     println!("label: {}", language_label(code));
     println!("the daemon will use this for the next transcription");
+}
+
+fn transcription_current(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let profile = config.transcription_profile;
+
+    if json {
+        let value = serde_json::json!({
+            "profile": profile.as_config_value(),
+            "label": profile.label(),
+            "description": profile.description(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("profile: {}", profile.as_config_value());
+    println!("label: {}", profile.label());
+    println!("description: {}", profile.description());
+}
+
+fn transcription_list(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let current = config.transcription_profile;
+
+    if json {
+        let profiles = TranscriptionProfile::all()
+            .iter()
+            .map(|profile| {
+                serde_json::json!({
+                    "name": profile.as_config_value(),
+                    "label": profile.label(),
+                    "description": profile.description(),
+                    "selected": *profile == current,
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "current": {
+                "profile": current.as_config_value(),
+                "label": current.label(),
+                "description": current.description(),
+            },
+            "profiles": profiles,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!(
+        "current: {} ({})",
+        current.as_config_value(),
+        current.label()
+    );
+    println!("profiles:");
+    for profile in TranscriptionProfile::all() {
+        let marker = if *profile == current { "*" } else { " " };
+        println!(
+            " {marker} {:<10} {}",
+            profile.as_config_value(),
+            profile.description()
+        );
+    }
+}
+
+fn transcription_use(selection: Option<String>) {
+    let Some(selection) = selection else {
+        eprintln!("usage: chirper transcription-use <balanced|fast>");
+        std::process::exit(1);
+    };
+
+    let profile = match parse_transcription_profile(&selection) {
+        Some(profile) => profile,
+        None => {
+            eprintln!("unknown transcription profile: {selection}");
+            eprintln!("usage: chirper transcription-use <balanced|fast>");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(error) = ChirperConfig::save_default_transcription_profile(profile) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!(
+        "selected transcription profile: {}",
+        profile.as_config_value()
+    );
+    println!("description: {}", profile.description());
+    println!("the daemon will use this for the next transcription");
+}
+
+fn parse_transcription_profile(value: &str) -> Option<TranscriptionProfile> {
+    value.parse::<TranscriptionProfile>().ok()
 }
 
 fn current_language_code(config: &ChirperConfig) -> String {
@@ -4180,6 +4366,10 @@ fn print_status() {
     println!("config_path: {}", config_path.display());
     println!("audio_backend: {:?}", config.audio_backend);
     println!("asr_backend: {:?}", config.asr_backend);
+    println!(
+        "transcription_profile: {}",
+        config.transcription_profile.as_config_value()
+    );
     println!("gpu_backend: {:?}", config.gpu_backend);
     println!("formatter_backend: {:?}", config.formatter_backend);
     println!("insertion_backend: {:?}", config.insertion_backend);

@@ -67,6 +67,14 @@ cargo run -p chirper-cli -- language-use id
 cargo run -p chirper-cli -- language-use auto
 ```
 
+To switch between the default and faster whisper.cpp decoding profiles:
+
+```sh
+cargo run -p chirper-cli -- transcription-list
+cargo run -p chirper-cli -- transcription-use fast
+cargo run -p chirper-cli -- transcribe-file --fast /path/to/audio.wav
+```
+
 To inspect and select Ollama formatting models:
 
 ```sh
