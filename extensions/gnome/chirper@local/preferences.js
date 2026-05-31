@@ -530,8 +530,11 @@ class ChirperPreferencesBuilder {
             const current = data.current ?? {};
             const profiles = data.profiles ?? [];
 
-            this._currentTranscriptionRow.subtitle =
-                `${current.label ?? current.profile ?? 'Balanced'} - ${current.description ?? ''}`;
+            const currentName = current.label ?? current.profile ?? 'Balanced';
+            const currentDescription = current.description?.trim();
+            this._currentTranscriptionRow.subtitle = currentDescription
+                ? `${currentName} - ${currentDescription}`
+                : currentName;
 
             for (const profile of profiles) {
                 const selected = Boolean(profile.selected);
@@ -541,7 +544,7 @@ class ChirperPreferencesBuilder {
                 });
                 addButton(row, selected ? 'Selected' : 'Use', () => this._selectTranscriptionProfile(profile.name), {
                     sensitive: !selected,
-                    suggested: profile.name === 'fast',
+                    suggested: !selected,
                 });
                 this._transcriptionGroup.add(row);
                 this._transcriptionRows.push(row);
