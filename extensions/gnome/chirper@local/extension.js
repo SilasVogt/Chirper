@@ -35,6 +35,9 @@ const OVERLAY_HEIGHT = 82;
 const DAEMON_SERVICE = 'chirper-daemon.service';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
+const CHECK_UPDATES_KEY = 'check-updates';
+const UPDATE_INITIAL_CHECK_SECONDS = 20;
+const UPDATE_CHECK_SECONDS = 6 * 60 * 60;
 const COMMON_WHISPER_DOWNLOADS = [
     'base',
     'small.en',
@@ -172,6 +175,10 @@ export default class ChirperExtension extends Extension {
         this._virtualKeyboard = null;
         this._selectedAudioTarget = null;
         this._activeAudioLabel = null;
+        this._updateStatus = null;
+        this._updateChecking = false;
+        this._updateRunning = false;
+        this._updateNotifiedForSha = null;
 
         this._rememberFocusedWindow();
         this._focusWindowId = global.display.connect('notify::focus-window', () => {
@@ -182,6 +189,7 @@ export default class ChirperExtension extends Extension {
         this._buildOverlay();
         this._registerKeybinding();
         this._refreshStatus();
+        this._scheduleUpdateChecks();
 
         this._pollSourceId = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT,
@@ -208,9 +216,24 @@ export default class ChirperExtension extends Extension {
             this._pulseSourceId = 0;
         }
 
+        if (this._updateInitialCheckSourceId) {
+            GLib.source_remove(this._updateInitialCheckSourceId);
+            this._updateInitialCheckSourceId = 0;
+        }
+
+        if (this._updateCheckSourceId) {
+            GLib.source_remove(this._updateCheckSourceId);
+            this._updateCheckSourceId = 0;
+        }
+
         if (this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
+        }
+
+        if (this._updateSettingsChangedId) {
+            this._settings.disconnect(this._updateSettingsChangedId);
+            this._updateSettingsChangedId = 0;
         }
 
         if (this._focusWindowId) {
@@ -249,6 +272,10 @@ export default class ChirperExtension extends Extension {
         this._screenAudioMenu = null;
         this._modelMenu = null;
         this._ollamaMenu = null;
+        this._updateStatusItem = null;
+        this._updateCheckItem = null;
+        this._updateItem = null;
+        this._updateStatus = null;
         this._selectedAudioTarget = null;
         this._activeAudioLabel = null;
         this._runtime = null;
@@ -371,6 +398,23 @@ export default class ChirperExtension extends Extension {
         });
         this._indicator.menu.addMenuItem(preferencesItem);
 
+        this._updateStatusItem = new PopupMenu.PopupMenuItem('Updates: not checked', {
+            reactive: false,
+        });
+        this._indicator.menu.addMenuItem(this._updateStatusItem);
+
+        this._updateCheckItem = new PopupMenu.PopupMenuItem('Check for Updates');
+        this._updateCheckItem.connect('activate', () => {
+            this._checkForUpdates(true);
+        });
+        this._indicator.menu.addMenuItem(this._updateCheckItem);
+
+        this._updateItem = new PopupMenu.PopupMenuItem('Update Chirper');
+        this._updateItem.connect('activate', () => {
+            this._runUpdate();
+        });
+        this._indicator.menu.addMenuItem(this._updateItem);
+
         const refreshItem = new PopupMenu.PopupMenuItem('Refresh Status');
         refreshItem.connect('activate', () => {
             this._refreshStatus(true);
@@ -391,6 +435,7 @@ export default class ChirperExtension extends Extension {
 
         this._syncShortcutLabel();
         this._syncPrimaryAction();
+        this._syncUpdateMenu();
         this._refreshAudioMenu();
         this._refreshTranscriptionMenu();
         this._refreshModelMenu();
@@ -443,6 +488,46 @@ export default class ChirperExtension extends Extension {
             `changed::${TOGGLE_RECORDING_KEY}`,
             () => {
                 this._syncShortcutLabel();
+            }
+        );
+        this._updateSettingsChangedId = this._settings.connect(
+            `changed::${CHECK_UPDATES_KEY}`,
+            () => {
+                this._scheduleUpdateChecks();
+            }
+        );
+    }
+
+    _scheduleUpdateChecks() {
+        if (this._updateInitialCheckSourceId) {
+            GLib.source_remove(this._updateInitialCheckSourceId);
+            this._updateInitialCheckSourceId = 0;
+        }
+
+        if (this._updateCheckSourceId) {
+            GLib.source_remove(this._updateCheckSourceId);
+            this._updateCheckSourceId = 0;
+        }
+
+        if (!this._settings?.get_boolean(CHECK_UPDATES_KEY))
+            return;
+
+        this._updateInitialCheckSourceId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            UPDATE_INITIAL_CHECK_SECONDS,
+            () => {
+                this._updateInitialCheckSourceId = 0;
+                this._checkForUpdates(false);
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+
+        this._updateCheckSourceId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            UPDATE_CHECK_SECONDS,
+            () => {
+                this._checkForUpdates(false);
+                return GLib.SOURCE_CONTINUE;
             }
         );
     }
@@ -878,6 +963,97 @@ export default class ChirperExtension extends Extension {
         } catch (error) {
             Main.notify('Chirper', `Failed to select Ollama model: ${error.message}`);
         }
+    }
+
+    async _checkForUpdates(manual = false) {
+        if (this._updateChecking || this._updateRunning)
+            return;
+
+        this._updateChecking = true;
+        this._syncUpdateMenu();
+
+        try {
+            const output = await this._runCli(['update-check', '--json']);
+            const data = JSON.parse(output);
+            this._updateStatus = data;
+            this._syncUpdateMenu();
+
+            if (data.update_available) {
+                const remote = data.upstream_sha ?? '';
+                if (manual || this._updateNotifiedForSha !== remote) {
+                    this._updateNotifiedForSha = remote;
+                    Main.notify(
+                        'Chirper update available',
+                        'Open the Chirper panel menu and choose Update Chirper.'
+                    );
+                }
+            } else if (manual) {
+                Main.notify('Chirper', 'Chirper is up to date.');
+            }
+        } catch (error) {
+            this._updateStatus = {error: error.message};
+            this._syncUpdateMenu();
+
+            if (manual)
+                Main.notify('Chirper', `Update check failed: ${error.message}`);
+        } finally {
+            this._updateChecking = false;
+            this._syncUpdateMenu();
+        }
+    }
+
+    async _runUpdate() {
+        if (this._updateRunning)
+            return;
+
+        this._updateRunning = true;
+        this._syncUpdateMenu();
+        Main.notify('Chirper', 'Updating Chirper. This may take a few minutes.');
+
+        try {
+            await this._runCli(['update']);
+            this._updateStatus = null;
+            this._updateNotifiedForSha = null;
+            this._syncUpdateMenu();
+            Main.notify(
+                'Chirper update finished',
+                'The daemon was restarted. Log out and back in if extension UI changed.'
+            );
+            await this._checkForUpdates(false);
+        } catch (error) {
+            this._updateStatus = {error: error.message};
+            this._syncUpdateMenu();
+            Main.notify('Chirper', `Update failed: ${error.message}`);
+        } finally {
+            this._updateRunning = false;
+            this._syncUpdateMenu();
+        }
+    }
+
+    _syncUpdateMenu() {
+        if (!this._updateStatusItem || !this._updateCheckItem || !this._updateItem)
+            return;
+
+        if (this._updateRunning) {
+            this._updateStatusItem.label.text = 'Updates: installing';
+        } else if (this._updateChecking) {
+            this._updateStatusItem.label.text = 'Updates: checking';
+        } else if (this._updateStatus?.error) {
+            this._updateStatusItem.label.text = 'Updates: check failed';
+        } else if (this._updateStatus?.update_available) {
+            this._updateStatusItem.label.text = `Updates: ${this._updateStatus.behind} commit(s) available`;
+        } else if (this._updateStatus) {
+            this._updateStatusItem.label.text = 'Updates: up to date';
+        } else {
+            this._updateStatusItem.label.text = 'Updates: not checked';
+        }
+
+        this._updateCheckItem.setSensitive(!this._updateChecking && !this._updateRunning);
+        this._updateItem.setSensitive(
+            !this._updateChecking &&
+                !this._updateRunning &&
+                Boolean(this._updateStatus?.update_available)
+        );
     }
 
     async _runCli(args) {

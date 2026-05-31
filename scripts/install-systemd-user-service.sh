@@ -59,7 +59,9 @@ SERVICE
 systemctl --user daemon-reload
 systemctl --user enable "$service_name"
 
-if ! systemctl --user is-active --quiet "$service_name"; then
+if systemctl --user is-active --quiet "$service_name"; then
+  systemctl --user restart "$service_name"
+else
   systemctl --user start "$service_name"
 fi
 

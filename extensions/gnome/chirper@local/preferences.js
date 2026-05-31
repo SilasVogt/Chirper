@@ -13,6 +13,7 @@ const DAEMON_SERVICE = 'chirper-daemon.service';
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.chirper';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
+const CHECK_UPDATES_KEY = 'check-updates';
 const COMMON_WHISPER_DOWNLOADS = [
     'base',
     'small.en',
@@ -153,6 +154,8 @@ class ChirperPreferencesBuilder {
         this._aiLogRows = [];
         this._ollamaRows = [];
         this._refreshingAiFormatting = false;
+        this._updateChecking = false;
+        this._updateRunning = false;
     }
 
     build() {
@@ -182,6 +185,16 @@ class ChirperPreferencesBuilder {
             title: 'Recording Shortcut',
             subtitle: formatAccelerator(shortcut),
         }));
+
+        const updateCheckRow = new Adw.SwitchRow({
+            title: 'Automatic Update Checks',
+            subtitle: 'The GNOME extension checks periodically and notifies when the installed source checkout is behind upstream.',
+            active: this._settings.get_boolean(CHECK_UPDATES_KEY),
+        });
+        updateCheckRow.connect('notify::active', row => {
+            this._settings.set_boolean(CHECK_UPDATES_KEY, row.get_active());
+        });
+        generalGroup.add(updateCheckRow);
 
         const audioGroup = new Adw.PreferencesGroup({
             title: 'Audio Input',
@@ -283,6 +296,28 @@ class ChirperPreferencesBuilder {
         });
         addButton(configRow, 'Open', () => this._openConfigFolder(configPath));
         daemonGroup.add(configRow);
+
+        const updateGroup = new Adw.PreferencesGroup({
+            title: 'Updates',
+            description: 'Checks the installed Chirper source checkout against its upstream branch.',
+        });
+        page.add(updateGroup);
+
+        this._updateStatusRow = new Adw.ActionRow({
+            title: 'Update Status',
+            subtitle: 'Not checked yet',
+        });
+        updateGroup.add(this._updateStatusRow);
+
+        const updateActionsRow = new Adw.ActionRow({
+            title: 'Update Chirper',
+            subtitle: 'Pulls, rebuilds, reinstalls the user service and GNOME extension, then restarts the daemon.',
+        });
+        this._updateButton = addButton(updateActionsRow, 'Update', () => this._runUpdate(), {
+            suggested: true,
+        });
+        this._updateCheckButton = addButton(updateActionsRow, 'Check', () => this._checkUpdates());
+        updateGroup.add(updateActionsRow);
 
         const modelGroup = new Adw.PreferencesGroup({
             title: 'Whisper Models',
@@ -420,6 +455,78 @@ class ChirperPreferencesBuilder {
         this._refreshModels();
         this._refreshAiFormatting();
         this._refreshOllama();
+        this._checkUpdates();
+    }
+
+    async _checkUpdates() {
+        if (this._updateChecking || this._updateRunning)
+            return;
+
+        this._updateChecking = true;
+        this._syncUpdateButtons();
+        this._updateStatusRow.subtitle = 'Checking';
+
+        try {
+            const output = await this._runCli(['update-check', '--json']);
+            const data = JSON.parse(output);
+            this._lastUpdateStatus = data;
+            this._updateStatusRow.subtitle = this._formatUpdateStatus(data);
+        } catch (error) {
+            this._lastUpdateStatus = null;
+            this._updateStatusRow.subtitle = error.message;
+        } finally {
+            this._updateChecking = false;
+            this._syncUpdateButtons();
+        }
+    }
+
+    async _runUpdate() {
+        if (this._updateRunning)
+            return;
+
+        this._updateRunning = true;
+        this._syncUpdateButtons();
+        this._updateStatusRow.subtitle = 'Updating';
+
+        try {
+            await this._runCli(['update']);
+            this._updateStatusRow.subtitle = 'Update finished. Relog if the GNOME extension UI changed.';
+            await this._checkUpdates();
+        } catch (error) {
+            this._updateStatusRow.subtitle = error.message;
+        } finally {
+            this._updateRunning = false;
+            this._syncUpdateButtons();
+        }
+    }
+
+    _syncUpdateButtons() {
+        const busy = this._updateChecking || this._updateRunning;
+
+        if (this._updateCheckButton)
+            this._updateCheckButton.sensitive = !busy;
+
+        if (this._updateButton) {
+            const updateAvailable = Boolean(this._lastUpdateStatus?.update_available);
+            this._updateButton.sensitive = !busy && updateAvailable;
+        }
+    }
+
+    _formatUpdateStatus(data) {
+        const branch = data.branch ?? 'unknown branch';
+        const local = String(data.local_sha ?? '').slice(0, 7);
+        const remote = String(data.upstream_sha ?? '').slice(0, 7);
+
+        if (data.update_available)
+            return `${data.behind} commit(s) behind ${branch}: ${local} -> ${remote}`;
+
+        if (Number(data.ahead ?? 0) > 0)
+            return `${branch} is ${data.ahead} commit(s) ahead of upstream`;
+
+        if (data.dirty)
+            return `${branch} is up to date with local changes`;
+
+        return `${branch} is up to date`;
     }
 
     async _refreshAudioInputs() {
