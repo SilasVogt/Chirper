@@ -163,12 +163,16 @@ chirper format-compare --custom-prompt "strict=Return only corrected final text.
   --report-dir ./reports
 chirper-model-compare
 chirper-report-viewer
+chirper-test-workflow-builder
 ```
 
 The GTK compare app exposes the same compare options without remembering flags,
 including selected prompt variants and multiple transcript cases.
 The report viewer opens saved compare reports and is better for reviewing large
 benchmark runs after the fact.
+The test workflow builder is better for staged experiments where one model's
+output should feed another model, and it writes each stage prompt and output to
+the selected run folder.
 
 To compare Codex CLI settings instead of local Ollama models, first check that
 Codex is available:

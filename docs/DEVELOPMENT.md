@@ -119,6 +119,7 @@ cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma w
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
 scripts/run-model-compare.sh
 scripts/run-report-viewer.sh
+scripts/run-test-workflow-builder.sh
 ```
 
 The command runs models sequentially so timing stays meaningful and large models
@@ -153,6 +154,15 @@ saved `chirper-format-compare-*.txt` files, parses prompt/model/transcript
 sections, and lets you filter outputs by prompt, transcript, and model. It can
 show the raw output as regular text or apply a lightweight Markdown preview for
 models that emit Markdown.
+
+`scripts/run-test-workflow-builder.sh` opens the GTK/libadwaita test workflow
+builder. It is for prompt and pipeline experiments rather than live dictation:
+paste a transcript, add ordered Ollama stages, choose a model and prompt for
+each stage, then run the stages sequentially. Stage prompts can use
+`{input}`, `{transcript}`, `{previous}`, `{outputs}`, and
+`{stage:Stage Name}` placeholders. Runs are written to
+`~/Documents/Chirper Workflow Runs` by default, including `workflow.json`, the
+source transcript, every prompt file, every output file, and `summary.json`.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

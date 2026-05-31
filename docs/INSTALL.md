@@ -63,8 +63,9 @@ What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`
 - builds `chirper` and `chirper-daemon` in release mode
-- symlinks `chirper`, `chirper-daemon`, `chirper-model-compare`, and
-  `chirper-report-viewer` into `~/.local/bin`
+- symlinks `chirper`, `chirper-daemon`, `chirper-model-compare`,
+  `chirper-report-viewer`, and `chirper-test-workflow-builder` into
+  `~/.local/bin`
 - builds whisper.cpp with `--backend auto --model base`
 - writes a starter config only if `~/.config/chirper/config.toml` does not exist
 - installs and starts `chirper-daemon.service` as a user systemd service
@@ -104,6 +105,7 @@ CHIRPER_BUILD_PROFILE=release scripts/install-gnome-extension.sh
 mkdir -p ~/.local/bin
 ln -sf "$PWD/scripts/run-model-compare.sh" ~/.local/bin/chirper-model-compare
 ln -sf "$PWD/scripts/run-report-viewer.sh" ~/.local/bin/chirper-report-viewer
+ln -sf "$PWD/scripts/run-test-workflow-builder.sh" ~/.local/bin/chirper-test-workflow-builder
 ```
 
 Enable the extension:
@@ -158,6 +160,7 @@ chirper format-compare --custom-prompt "strict=Return only corrected final text.
   --report-dir ./chirper-reports
 chirper-model-compare
 chirper-report-viewer
+chirper-test-workflow-builder
 ```
 
 The compare command runs models sequentially and unloads each model afterward by
@@ -170,6 +173,11 @@ variants, and named transcript cases. Custom prompt comparisons write one report
 file per prompt variant.
 `chirper-report-viewer` opens the saved reports and lets you filter by prompt,
 transcript, and model, with regular text and Markdown preview modes.
+`chirper-test-workflow-builder` opens a GTK app for chaining local Ollama stages
+such as transcript cleanup, vocabulary lookup planning, and final formatting.
+Each stage receives the previous stage output, can use placeholders like
+`{input}`, `{transcript}`, and `{outputs}`, and writes prompt/output files under
+`~/Documents/Chirper Workflow Runs` by default.
 
 ## Codex CLI Formatting
 

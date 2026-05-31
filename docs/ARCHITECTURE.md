@@ -33,6 +33,11 @@ GTK/libadwaita settings app
   Optional settings frontend.
   Edits config, models, dictionaries, snippets, and diagnostics.
   Talks to daemon over D-Bus or config service methods.
+
+GTK/libadwaita test tools
+  Optional local experimentation frontends.
+  Compare formatter models, review benchmark reports, and chain staged model
+  prompts without changing the live daemon workflow.
 ```
 
 The first implemented daemon API is newline-delimited JSON over a Unix socket at
