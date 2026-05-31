@@ -44,6 +44,7 @@ pub struct ChirperConfig {
     pub audio_backend: AudioBackend,
     pub pipewire_target: Option<String>,
     pub asr_backend: AsrBackend,
+    pub transcription_profile: TranscriptionProfile,
     pub gpu_backend: GpuBackend,
     pub formatter_backend: FormatterBackend,
     pub insertion_backend: InsertionBackend,
@@ -73,6 +74,7 @@ impl Default for ChirperConfig {
             audio_backend: AudioBackend::PipeWire,
             pipewire_target: None,
             asr_backend: AsrBackend::WhisperCpp,
+            transcription_profile: TranscriptionProfile::Balanced,
             gpu_backend: GpuBackend::Auto,
             formatter_backend: FormatterBackend::None,
             insertion_backend: InsertionBackend::Clipboard,
@@ -138,6 +140,10 @@ impl ChirperConfig {
 
         if let Some(value) = table.get("asr_backend") {
             config.asr_backend = parse_config_value("asr_backend", value)?;
+        }
+
+        if let Some(value) = table.get("transcription_profile") {
+            config.transcription_profile = parse_config_value("transcription_profile", value)?;
         }
 
         if let Some(value) = table.get("gpu_backend") {
@@ -449,6 +455,21 @@ impl ChirperConfig {
         write_config_table(path, &table)
     }
 
+    pub fn save_transcription_profile(
+        path: impl AsRef<Path>,
+        profile: TranscriptionProfile,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+
+        table.insert(
+            "transcription_profile".to_string(),
+            toml::Value::String(profile.as_config_value().to_string()),
+        );
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_codex_selection(
         path: impl AsRef<Path>,
         model: Option<&str>,
@@ -703,6 +724,10 @@ impl ChirperConfig {
         Self::save_language_selection(Self::default_path(), language)
     }
 
+    pub fn save_default_transcription_profile(profile: TranscriptionProfile) -> ChirperResult<()> {
+        Self::save_transcription_profile(Self::default_path(), profile)
+    }
+
     pub fn save_default_codex_selection(
         model: Option<&str>,
         profile: Option<&str>,
@@ -768,6 +793,51 @@ pub struct CodexProfileConfig {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub config_overrides: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptionProfile {
+    Balanced,
+    Fast,
+}
+
+impl TranscriptionProfile {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::Fast => "fast",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Balanced => "Balanced",
+            Self::Fast => "Fast",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Balanced => "Current whisper.cpp defaults for better accuracy.",
+            Self::Fast => "Lower-latency decoding with fewer retries and less context.",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Balanced, Self::Fast]
+    }
+}
+
+impl FromStr for TranscriptionProfile {
+    type Err = ChirperError;
+
+    fn from_str(value: &str) -> ChirperResult<Self> {
+        match normalize(value).as_str() {
+            "balanced" | "default" | "normal" | "quality" | "accurate" => Ok(Self::Balanced),
+            "fast" | "quick" | "lowlatency" | "latency" => Ok(Self::Fast),
+            _ => Err(unknown_value("transcription_profile", value)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1175,6 +1245,7 @@ mod tests {
         assert_eq!(config.audio_backend, AudioBackend::PipeWire);
         assert_eq!(config.pipewire_target, None);
         assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
+        assert_eq!(config.transcription_profile, TranscriptionProfile::Balanced);
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
         assert_eq!(config.insertion_backend, InsertionBackend::Clipboard);
         assert_eq!(config.dictation_mode, DictationMode::Auto);
@@ -1187,6 +1258,7 @@ mod tests {
         let config = ChirperConfig::from_toml_str(
             r#"
             asr_backend = "whisper-cpp"
+            transcription_profile = "fast"
             pipewire_target = "alsa_input.usb-example.mic"
             gpu_backend = "HIP"
             formatter_backend = "llama.cpp"
@@ -1217,6 +1289,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
+        assert_eq!(config.transcription_profile, TranscriptionProfile::Fast);
         assert_eq!(
             config.pipewire_target,
             Some("alsa_input.usb-example.mic".to_string())
@@ -1419,6 +1492,32 @@ mod tests {
         let config = ChirperConfig::load_from_path(&path).unwrap();
 
         assert_eq!(config.whisper_language, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_transcription_profile_updates_only_profile_field() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "transcription-profile"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_transcription_profile(&path, TranscriptionProfile::Fast).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.transcription_profile, TranscriptionProfile::Fast);
 
         let _ = fs::remove_file(path);
     }

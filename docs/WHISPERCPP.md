@@ -41,6 +41,21 @@ cargo run -p chirper-cli -- model-use small
 The daemon reloads config when a recording is stopped, so model changes apply to
 the next transcription without restarting the service.
 
+## Transcription Speed Profiles
+
+Chirper has two whisper.cpp decoding profiles:
+
+```sh
+cargo run -p chirper-cli -- transcription-list
+cargo run -p chirper-cli -- transcription-use balanced
+cargo run -p chirper-cli -- transcription-use fast
+```
+
+`balanced` preserves the current whisper.cpp defaults. `fast` adds `-nf`,
+`-bo 1`, `-bs 1`, and `-mc 0`, which reduces fallback retries, candidate search,
+and text context. It should feel quicker after stopping a recording, especially
+with larger models, but it can lose some accuracy on difficult audio.
+
 For ROCm/HIP later:
 
 ```sh
