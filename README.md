@@ -79,6 +79,9 @@ The durable docs are:
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [whisper.cpp Setup](docs/WHISPERCPP.md)
 
+Contributions should go through pull requests. See
+[Contributing](CONTRIBUTING.md) for the branch, review, and CI workflow.
+
 ## Initial Shape
 
 ```text
