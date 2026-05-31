@@ -33,11 +33,7 @@ cargo test --workspace
 For GNOME/GJS app or extension changes:
 
 ```sh
-node --check extensions/gnome/chirper@local/extension.js
-node --check extensions/gnome/chirper@local/preferences.js
-node --check apps/model-compare/main.js
-node --check apps/report-viewer/main.js
-node --check apps/workflow-builder/main.js
+find extensions apps -name '*.js' -exec node --check {} \;
 ```
 
 For shell script changes:
