@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Workspace
+        run: cargo check --workspace
+
+      - name: Test Workspace
+        run: cargo test --workspace
+
+  scripts-and-gjs:
+    name: Scripts and GJS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Shell Scripts
+        run: bash -n scripts/*.sh
+
+      - name: Check GJS Syntax
+        run: |
+          node --check extensions/gnome/chirper@local/extension.js
+          node --check extensions/gnome/chirper@local/preferences.js
+          node --check extensions/gnome/chirper@local/prefs.js
+          node --check extensions/gnome/chirper@local/settings.js
+          node --check apps/model-compare/main.js
+          node --check apps/report-viewer/main.js
+          node --check apps/workflow-builder/main.js
