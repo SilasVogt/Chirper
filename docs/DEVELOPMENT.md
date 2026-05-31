@@ -118,6 +118,7 @@ cargo run -p chirper-cli -- format-compare --no-ollama --codex-profile fast "hel
 cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma world"
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
 scripts/run-model-compare.sh
+scripts/run-report-viewer.sh
 ```
 
 The command runs models sequentially so timing stays meaningful and large models
@@ -146,6 +147,12 @@ baseline dumps so prompt results are easier to scan.
 the same main options as checkboxes, model tickboxes, Codex profile management,
 prompt notes, custom prompt variants, transcript cases, report folder selection,
 live current-model progress, elapsed runtime, and hardware summary.
+
+`scripts/run-report-viewer.sh` opens the GTK/libadwaita report viewer. It reads
+saved `chirper-format-compare-*.txt` files, parses prompt/model/transcript
+sections, and lets you filter outputs by prompt, transcript, and model. It can
+show the raw output as regular text or apply a lightweight Markdown preview for
+models that emit Markdown.
 
 To manage preferred spellings used by the rules preprocessor and the Ollama
 prompt:

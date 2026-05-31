@@ -162,10 +162,13 @@ chirper format-compare --custom-prompt "strict=Return only corrected final text.
   --transcript "case-1=your transcript" \
   --report-dir ./reports
 chirper-model-compare
+chirper-report-viewer
 ```
 
 The GTK compare app exposes the same compare options without remembering flags,
 including selected prompt variants and multiple transcript cases.
+The report viewer opens saved compare reports and is better for reviewing large
+benchmark runs after the fact.
 
 To compare Codex CLI settings instead of local Ollama models, first check that
 Codex is available:

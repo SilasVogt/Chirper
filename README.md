@@ -20,6 +20,7 @@ This repo is early but usable for local testing on Linux. The current path is:
   audio input selection, and settings
 - GTK/libadwaita model compare app for testing Ollama and Codex formatter
   configurations across prompt variants and transcript cases
+- GTK/libadwaita report viewer for comparing saved benchmark outputs
 
 ## Install
 
@@ -84,6 +85,7 @@ crates/chirper-daemon   background service and local API server
 crates/chirper-cli      command-line control/debug client
 crates/chirper-formatter-*  formatter backends
 apps/model-compare      GTK/libadwaita model comparison utility
+apps/report-viewer      GTK/libadwaita report comparison utility
 extensions/gnome        GNOME Shell extension frontend
 ```
 

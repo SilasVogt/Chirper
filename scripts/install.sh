@@ -195,11 +195,13 @@ mkdir -p "$bin_dir"
 ln -sf "$repo_root/target/$target_dir/chirper" "$bin_dir/chirper"
 ln -sf "$repo_root/target/$target_dir/chirper-daemon" "$bin_dir/chirper-daemon"
 ln -sf "$repo_root/scripts/run-model-compare.sh" "$bin_dir/chirper-model-compare"
+ln -sf "$repo_root/scripts/run-report-viewer.sh" "$bin_dir/chirper-report-viewer"
 
 echo "Linked binaries:"
 echo "  $bin_dir/chirper"
 echo "  $bin_dir/chirper-daemon"
 echo "  $bin_dir/chirper-model-compare"
+echo "  $bin_dir/chirper-report-viewer"
 
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   echo
