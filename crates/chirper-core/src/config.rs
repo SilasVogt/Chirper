@@ -54,6 +54,9 @@ pub struct ChirperConfig {
     pub whisper_language: Option<String>,
     pub ollama_command: String,
     pub ollama_model: String,
+    pub ai_hardware_tier: AiHardwareTier,
+    pub format_log_retention_days: u64,
+    pub ollama_preload_on_recording: bool,
     pub codex_command: String,
     pub codex_model: Option<String>,
     pub codex_profile: Option<String>,
@@ -79,7 +82,10 @@ impl Default for ChirperConfig {
             whispercpp_model_path: None,
             whisper_language: None,
             ollama_command: "ollama".to_string(),
-            ollama_model: "llama3.2".to_string(),
+            ollama_model: AiHardwareTier::High.ollama_model().to_string(),
+            ai_hardware_tier: AiHardwareTier::High,
+            format_log_retention_days: 7,
+            ollama_preload_on_recording: true,
             codex_command: "codex".to_string(),
             codex_model: None,
             codex_profile: None,
@@ -174,6 +180,18 @@ impl ChirperConfig {
             config.ollama_model = parse_string("ollama_model", value)?.to_string();
         }
 
+        if let Some(value) = table.get("ai_hardware_tier") {
+            config.ai_hardware_tier = parse_config_value("ai_hardware_tier", value)?;
+        }
+
+        if let Some(value) = table.get("format_log_retention_days") {
+            config.format_log_retention_days = parse_u64("format_log_retention_days", value)?;
+        }
+
+        if let Some(value) = table.get("ollama_preload_on_recording") {
+            config.ollama_preload_on_recording = parse_bool("ollama_preload_on_recording", value)?;
+        }
+
         if let Some(value) = table.get("codex_command") {
             config.codex_command = parse_string("codex_command", value)?.to_string();
         }
@@ -238,6 +256,13 @@ impl ChirperConfig {
 
     pub fn default_model_dir() -> PathBuf {
         Self::default_data_dir().join("models")
+    }
+
+    pub fn default_prompt_log_dir() -> PathBuf {
+        Self::default_path()
+            .parent()
+            .map(|parent| parent.join("prompt-logs"))
+            .unwrap_or_else(|| PathBuf::from("chirper/prompt-logs"))
     }
 
     pub fn default_model_path(model: &str) -> PathBuf {
@@ -465,6 +490,56 @@ impl ChirperConfig {
         write_config_table(path, &table)
     }
 
+    pub fn save_ai_formatting(
+        path: impl AsRef<Path>,
+        enabled: Option<bool>,
+        hardware_tier: Option<AiHardwareTier>,
+        log_retention_days: Option<u64>,
+        preload_on_recording: Option<bool>,
+    ) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+
+        if let Some(enabled) = enabled {
+            let backend = if enabled {
+                FormatterBackend::Ollama
+            } else {
+                FormatterBackend::Rules
+            };
+            table.insert(
+                "formatter_backend".to_string(),
+                toml::Value::String(backend.as_config_value().to_string()),
+            );
+        }
+
+        if let Some(hardware_tier) = hardware_tier {
+            table.insert(
+                "ai_hardware_tier".to_string(),
+                toml::Value::String(hardware_tier.as_config_value().to_string()),
+            );
+            table.insert(
+                "ollama_model".to_string(),
+                toml::Value::String(hardware_tier.ollama_model().to_string()),
+            );
+        }
+
+        if let Some(days) = log_retention_days {
+            table.insert(
+                "format_log_retention_days".to_string(),
+                toml::Value::Integer(days as i64),
+            );
+        }
+
+        if let Some(preload) = preload_on_recording {
+            table.insert(
+                "ollama_preload_on_recording".to_string(),
+                toml::Value::Boolean(preload),
+            );
+        }
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_codex_profile(
         path: impl AsRef<Path>,
         profile: CodexProfileConfig,
@@ -647,6 +722,21 @@ impl ChirperConfig {
         )
     }
 
+    pub fn save_default_ai_formatting(
+        enabled: Option<bool>,
+        hardware_tier: Option<AiHardwareTier>,
+        log_retention_days: Option<u64>,
+        preload_on_recording: Option<bool>,
+    ) -> ChirperResult<()> {
+        Self::save_ai_formatting(
+            Self::default_path(),
+            enabled,
+            hardware_tier,
+            log_retention_days,
+            preload_on_recording,
+        )
+    }
+
     pub fn save_default_codex_profile(profile: CodexProfileConfig) -> ChirperResult<()> {
         Self::save_codex_profile(Self::default_path(), profile)
     }
@@ -678,6 +768,64 @@ pub struct CodexProfileConfig {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub config_overrides: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiHardwareTier {
+    Low,
+    Medium,
+    High,
+}
+
+impl AiHardwareTier {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low end hardware",
+            Self::Medium => "Medium hardware",
+            Self::High => "High hardware",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Low => "Up to 8 GB VRAM",
+            Self::Medium => "8 to 12 GB VRAM",
+            Self::High => "16+ GB VRAM",
+        }
+    }
+
+    pub fn ollama_model(self) -> &'static str {
+        match self {
+            Self::Low => "granite4.1:3b",
+            Self::Medium => "granite4.1:8b",
+            Self::High => "granite4.1:8b",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Low, Self::Medium, Self::High]
+    }
+}
+
+impl FromStr for AiHardwareTier {
+    type Err = ChirperError;
+
+    fn from_str(value: &str) -> ChirperResult<Self> {
+        match normalize(value).as_str() {
+            "low" | "lowend" | "8gb" | "upto8gb" => Ok(Self::Low),
+            "medium" | "mid" | "8to12gb" | "12gb" => Ok(Self::Medium),
+            "high" | "highend" | "16gb" | "16plusgb" => Ok(Self::High),
+            _ => Err(unknown_value("ai_hardware_tier", value)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -822,6 +970,22 @@ fn parse_string<'a>(key: &str, value: &'a toml::Value) -> ChirperResult<&'a str>
     value
         .as_str()
         .ok_or_else(|| ChirperError::Configuration(format!("config key `{key}` must be a string")))
+}
+
+fn parse_bool(key: &str, value: &toml::Value) -> ChirperResult<bool> {
+    value
+        .as_bool()
+        .ok_or_else(|| ChirperError::Configuration(format!("config key `{key}` must be a boolean")))
+}
+
+fn parse_u64(key: &str, value: &toml::Value) -> ChirperResult<u64> {
+    let value = value.as_integer().ok_or_else(|| {
+        ChirperError::Configuration(format!("config key `{key}` must be an integer"))
+    })?;
+
+    u64::try_from(value).map_err(|_| {
+        ChirperError::Configuration(format!("config key `{key}` must be zero or greater"))
+    })
 }
 
 fn parse_optional_string(key: &str, value: &toml::Value) -> ChirperResult<Option<String>> {
@@ -1034,6 +1198,9 @@ mod tests {
             whisper_language = "en"
             ollama_command = "/usr/bin/ollama"
             ollama_model = "llama3.1:8b"
+            ai_hardware_tier = "low"
+            format_log_retention_days = 30
+            ollama_preload_on_recording = false
             codex_command = "/usr/bin/codex"
             codex_model = "gpt-5.5"
             codex_profile = "work"
@@ -1066,6 +1233,9 @@ mod tests {
         assert_eq!(config.whisper_language, Some("en".to_string()));
         assert_eq!(config.ollama_command, "/usr/bin/ollama");
         assert_eq!(config.ollama_model, "llama3.1:8b");
+        assert_eq!(config.ai_hardware_tier, AiHardwareTier::Low);
+        assert_eq!(config.format_log_retention_days, 30);
+        assert!(!config.ollama_preload_on_recording);
         assert_eq!(config.codex_command, "/usr/bin/codex");
         assert_eq!(config.codex_model, Some("gpt-5.5".to_string()));
         assert_eq!(config.codex_profile, Some("work".to_string()));

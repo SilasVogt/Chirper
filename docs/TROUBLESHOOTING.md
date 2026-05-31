@@ -120,6 +120,9 @@ ollama stop gemma4:latest
 
 `chirper format-compare` unloads compared models after each run unless
 `--keep-loaded` is passed.
+The daemon's Ollama formatter also asks Ollama to unload after formatting. If
+`ollama_preload_on_recording = true`, the model can still be resident while a
+recording is active because Chirper starts loading it when recording begins.
 
 ## Output Quality Is Poor
 

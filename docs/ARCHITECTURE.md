@@ -68,9 +68,10 @@ Backends should be swappable behind narrow interfaces:
   rules preprocessor stays first in the pipeline. It handles spoken punctuation,
   edit commands, configured vocabulary, learned spelling corrections, common
   domain/email phrases, and conservative context-specific symbol cleanup.
-  LLM formatters receive both the raw transcript and the preprocessed draft:
-  the draft is the authoritative baseline, while the raw transcript is only
-  extra evidence for spelling/context clues.
+  The daemon's Ollama AI formatting path currently sends the raw transcript to
+  the selected model and treats the model output as the final pasted text.
+  Compare/test tools can still run raw-only, rules-preprocessed, and custom
+  prompt variants for experimentation.
 - `InsertionBackend`: insert final text into the focused application.
 - `HotkeyBackend`: optional frontend-side trigger source.
 

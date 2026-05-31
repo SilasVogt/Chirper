@@ -16,10 +16,9 @@ asr_backend = "whisper-cpp"
 gpu_backend = "auto"
 
 # "rules" is fast local punctuation/symbol replacement plus vocabulary,
-# edit commands, and conservative domain/email cleanup. "ollama" and "codex"
-# first apply those rules, then ask the selected model/tool to polish casing,
-# punctuation, spacing, and paragraph structure using the raw transcript as
-# additional context.
+# edit commands, and conservative domain/email cleanup. "ollama" enables AI
+# formatting; the daemon sends the raw transcript to the selected Ollama model
+# and copies/pastes the model output.
 formatter_backend = "rules"
 
 # Initial insertion backends will be "clipboard" and "uinput".
@@ -46,7 +45,20 @@ whisper_language = "auto"
 # Ollama is optional. Use `chirper ollama-list`, `chirper ollama-use <model>`,
 # and `chirper formatter-use ollama <model>` to select a local model.
 ollama_command = "ollama"
-ollama_model = "llama3.2"
+ollama_model = "granite4.1:8b"
+
+# AI formatting presets used by the settings window.
+# low    -> granite4.1:3b, up to 8 GB VRAM
+# medium -> granite4.1:8b, 8 to 12 GB VRAM
+# high   -> granite4.1:8b, 16+ GB VRAM
+ai_hardware_tier = "high"
+
+# If true, the daemon starts loading the selected Ollama model when recording
+# starts. The formatting call asks Ollama to unload after generation.
+ollama_preload_on_recording = true
+
+# Prompt logs are written under ~/.config/chirper/prompt-logs. Use 0 to disable.
+format_log_retention_days = 7
 
 # Codex CLI is optional. It uses your installed `codex` auth/config and runs
 # `codex exec` in read-only, no-approval, ephemeral mode.

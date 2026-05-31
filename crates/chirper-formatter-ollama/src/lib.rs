@@ -1,9 +1,17 @@
-use std::process::{Command, Stdio};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 use chirper_core::{
     ChirperConfig, ChirperError, ChirperResult, DictationMode, Formatter, Transcript,
     VocabularyEntry,
 };
+
+pub const AI_FORMATTING_PROMPT_TEMPLATE: &str = "\
+Your job is to fix transcription errors and human made mistakes. the user may misspeak and try to correct themselves or specify specific spellings of words and names. Return only the cleaned-up final text. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. Do not explain your actions.
+
+{transcript}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaOptions {
@@ -25,6 +33,12 @@ impl OllamaOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaModel {
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OllamaFormatRun {
+    pub prompt: String,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,20 +116,36 @@ impl OllamaFormatter {
     ) -> ChirperResult<String> {
         self.ensure_model_installed()?;
 
-        let output = Command::new(&self.options.command)
+        let mut child = Command::new(&self.options.command)
             .arg("run")
             .arg("--nowordwrap")
             .arg("--hidethinking")
+            .arg("--keepalive")
+            .arg("0")
             .arg(&self.options.model)
-            .arg(prompt)
-            .stdin(Stdio::null())
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|source| {
                 ChirperError::Formatting(format!(
                     "failed to run `{}`: {source}",
                     self.options.command
                 ))
             })?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ChirperError::Formatting("failed to open Ollama stdin".to_string()))?;
+        stdin.write_all(prompt.as_bytes()).map_err(|source| {
+            ChirperError::Formatting(format!("failed to write Ollama prompt: {source}"))
+        })?;
+        drop(stdin);
+
+        let output = child.wait_with_output().map_err(|source| {
+            ChirperError::Formatting(format!("failed to wait for Ollama: {source}"))
+        })?;
 
         if !output.status.success() {
             return Err(ChirperError::Formatting(format!(
@@ -136,6 +166,13 @@ impl OllamaFormatter {
         Ok(formatted)
     }
 
+    pub fn format_ai_prompt(&self, transcript: &Transcript) -> ChirperResult<OllamaFormatRun> {
+        let prompt = build_ai_formatting_prompt(&transcript.text);
+        let output = self.format_custom_prompt(&prompt, &transcript.text)?;
+
+        Ok(OllamaFormatRun { prompt, output })
+    }
+
     fn ensure_model_installed(&self) -> ChirperResult<()> {
         let models = list_ollama_models(&self.options.command)?;
         if models.iter().any(|model| model.name == self.options.model) {
@@ -147,6 +184,10 @@ impl OllamaFormatter {
             self.options.model, self.options.model
         )))
     }
+}
+
+pub fn build_ai_formatting_prompt(transcript: &str) -> String {
+    AI_FORMATTING_PROMPT_TEMPLATE.replace("{transcript}", transcript)
 }
 
 impl Formatter for OllamaFormatter {
@@ -393,6 +434,15 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         assert!(prompt.contains("You receive only the raw transcript"));
         assert!(prompt.contains("Raw transcript:"));
         assert!(!prompt.contains("Preprocessed draft:"));
+    }
+
+    #[test]
+    fn ai_prompt_uses_raw_transcript_placeholder() {
+        let prompt = build_ai_formatting_prompt("hello comma world");
+
+        assert!(prompt.contains("fix transcription errors"));
+        assert!(prompt.contains("hello comma world"));
+        assert!(!prompt.contains("{transcript}"));
     }
 
     #[test]

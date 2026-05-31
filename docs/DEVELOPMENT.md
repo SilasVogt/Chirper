@@ -71,14 +71,21 @@ To inspect and select Ollama formatting models:
 
 ```sh
 cargo run -p chirper-cli -- ollama-list
-cargo run -p chirper-cli -- ollama-use llama3.2
+cargo run -p chirper-cli -- ai-format-current
+cargo run -p chirper-cli -- ai-format-use low
+cargo run -p chirper-cli -- ai-format-use high
+cargo run -p chirper-cli -- ai-format-logs 7
+cargo run -p chirper-cli -- ai-format-preload on
 cargo run -p chirper-cli -- formatter-use rules
-cargo run -p chirper-cli -- formatter-use ollama llama3.2
 ```
 
-`ollama-use` selects the model and enables the Ollama formatter by default.
-Use `--no-enable` to update `ollama_model` while keeping the current formatter
-backend.
+`ai-format-use` selects a hardware preset and enables the Ollama formatter.
+`low` maps to `granite4.1:3b`; `medium` and `high` map to `granite4.1:8b` for
+now. `ai-format-use off` disables AI formatting and returns to local rules.
+When enabled, the daemon sends the raw transcript to the selected Ollama model,
+uses the model output as the copied/pasted text, writes prompt/input/output logs
+under `~/.config/chirper/prompt-logs`, and prunes those logs according to
+`format_log_retention_days`.
 
 To inspect and select Codex CLI formatting:
 
@@ -97,10 +104,9 @@ settings. `codex-profile-add` saves named comparison profiles under
 `[codex_profiles.<name>]`. `--fast` stores Codex's `priority` service tier,
 which the Codex UI labels as Fast.
 
-The Ollama formatter always runs after the rules preprocessor. Its prompt
-includes the raw transcript plus the preprocessed draft; the draft is treated as
-authoritative so local edit commands, preferred spellings, and deterministic
-domain/email cleanup are not undone by the model.
+The daemon's Ollama formatter uses the current raw-transcript prompt directly.
+The compare tools can still test raw-only, rules-preprocessed, and custom prompt
+variants without changing daemon configuration.
 
 To compare formatter output across all installed Ollama models without changing
 the saved daemon configuration:

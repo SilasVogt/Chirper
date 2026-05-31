@@ -21,6 +21,12 @@ const COMMON_WHISPER_DOWNLOADS = [
     'large-v3-turbo',
     'large-v3-turbo-q5_0',
 ];
+const AI_LOG_RETENTION_OPTIONS = [
+    ['0', 'Off', 'Do not keep prompt logs.'],
+    ['1', '1 Day', 'Delete prompt logs older than one day.'],
+    ['7', '1 Week', 'Delete prompt logs older than one week.'],
+    ['30', '30 Days', 'Delete prompt logs older than 30 days.'],
+];
 
 export function loadExtensionSettings(extensionPath) {
     const schemaDir = GLib.build_filenamev([extensionPath, 'schemas']);
@@ -142,7 +148,10 @@ class ChirperPreferencesBuilder {
         this._languageRows = [];
         this._installedRows = [];
         this._downloadRows = [];
+        this._aiTierRows = [];
+        this._aiLogRows = [];
         this._ollamaRows = [];
+        this._refreshingAiFormatting = false;
     }
 
     build() {
@@ -279,6 +288,63 @@ class ChirperPreferencesBuilder {
         });
         page.add(this._downloadGroup);
 
+        const aiGroup = new Adw.PreferencesGroup({
+            title: 'AI Formatting',
+            description: 'Use Ollama after transcription to produce the final text that is copied or pasted.',
+        });
+        page.add(aiGroup);
+
+        this._aiFormattingSwitch = new Adw.SwitchRow({
+            title: 'AI Formatting',
+            subtitle: 'When off, Chirper uses local rules only.',
+        });
+        this._aiFormattingSwitch.connect('notify::active', row => {
+            if (!this._refreshingAiFormatting)
+                this._setAiFormattingEnabled(row.get_active());
+        });
+        aiGroup.add(this._aiFormattingSwitch);
+
+        this._aiStatusRow = new Adw.ActionRow({
+            title: 'Selected AI Model',
+            subtitle: 'Loading',
+        });
+        aiGroup.add(this._aiStatusRow);
+
+        this._aiPreloadSwitch = new Adw.SwitchRow({
+            title: 'Preload While Recording',
+            subtitle: 'Loads the selected Ollama model when recording starts, then unloads after formatting.',
+        });
+        this._aiPreloadSwitch.connect('notify::active', row => {
+            if (!this._refreshingAiFormatting)
+                this._setAiPreload(row.get_active());
+        });
+        aiGroup.add(this._aiPreloadSwitch);
+
+        this._aiPromptLogRow = new Adw.ActionRow({
+            title: 'Prompt Logs',
+            subtitle: 'Loading',
+        });
+        addButton(this._aiPromptLogRow, 'Open', () => this._openPromptLogFolder());
+        aiGroup.add(this._aiPromptLogRow);
+
+        const refreshAiRow = new Adw.ActionRow({
+            title: 'Refresh AI Formatting',
+            subtitle: 'Reload the current AI formatting config.',
+        });
+        addButton(refreshAiRow, 'Refresh', () => this._refreshAiFormatting());
+        aiGroup.add(refreshAiRow);
+
+        this._aiTierGroup = new Adw.PreferencesGroup({
+            title: 'AI Hardware Presets',
+            description: 'Presets choose the Ollama model Chirper uses for AI formatting.',
+        });
+        page.add(this._aiTierGroup);
+
+        this._aiLogGroup = new Adw.PreferencesGroup({
+            title: 'AI Prompt Log Retention',
+        });
+        page.add(this._aiLogGroup);
+
         const ollamaGroup = new Adw.PreferencesGroup({
             title: 'Ollama',
             description: 'Use an installed Ollama model to polish dictated text after local rules run.',
@@ -326,6 +392,7 @@ class ChirperPreferencesBuilder {
         this._refreshAudioInputs();
         this._refreshLanguages();
         this._refreshModels();
+        this._refreshAiFormatting();
         this._refreshOllama();
     }
 
@@ -505,6 +572,129 @@ class ChirperPreferencesBuilder {
         } catch (error) {
             this._currentModelRow.subtitle = error.message;
         }
+    }
+
+    async _refreshAiFormatting() {
+        this._aiStatusRow.subtitle = 'Loading';
+        this._aiPromptLogRow.subtitle = 'Loading';
+        this._clearRows(this._aiTierGroup, this._aiTierRows);
+        this._clearRows(this._aiLogGroup, this._aiLogRows);
+
+        try {
+            const output = await this._runCli(['ai-format-current', '--json']);
+            const data = JSON.parse(output);
+            const enabled = Boolean(data.enabled);
+            const currentTier = data.hardware_tier ?? 'high';
+            const tiers = data.tiers ?? [];
+            this._aiCurrentTier = currentTier;
+
+            this._refreshingAiFormatting = true;
+            this._aiFormattingSwitch.active = enabled;
+            this._aiPreloadSwitch.active = Boolean(data.preload_on_recording);
+            this._refreshingAiFormatting = false;
+
+            this._aiStatusRow.subtitle = enabled
+                ? `${data.hardware_tier_label ?? currentTier}: ${data.model}`
+                : `Off, using ${data.backend ?? 'rules'}`;
+            this._aiPromptLogRow.subtitle = `${data.prompt_log_dir ?? 'Prompt log folder'} - keep ${this._formatLogDays(data.log_retention_days)}`;
+            this._aiPromptLogPath = data.prompt_log_dir;
+
+            for (const tier of tiers) {
+                const selected = tier.name === currentTier && enabled;
+                const row = new Adw.ActionRow({
+                    title: tier.label ?? tier.name,
+                    subtitle: `${tier.description ?? ''} - ${tier.model ?? ''}`,
+                });
+                addButton(row, selected ? 'Selected' : 'Use', () => this._selectAiTier(tier.name), {
+                    sensitive: !selected,
+                    suggested: tier.name === 'high',
+                });
+                this._aiTierGroup.add(row);
+                this._aiTierRows.push(row);
+            }
+
+            for (const [days, title, subtitle] of AI_LOG_RETENTION_OPTIONS) {
+                const selected = String(data.log_retention_days ?? 7) === days;
+                const row = new Adw.ActionRow({title, subtitle});
+                addButton(row, selected ? 'Selected' : 'Use', () => this._setAiLogRetention(days), {
+                    sensitive: !selected,
+                });
+                this._aiLogGroup.add(row);
+                this._aiLogRows.push(row);
+            }
+        } catch (error) {
+            this._refreshingAiFormatting = false;
+            this._aiStatusRow.subtitle = 'AI formatting controls unavailable';
+            this._aiPromptLogRow.subtitle = error.message;
+            this._addInfoRow(this._aiTierGroup, this._aiTierRows, error.message);
+            this._addInfoRow(this._aiLogGroup, this._aiLogRows, 'Check that Chirper has been built.');
+        }
+    }
+
+    async _setAiFormattingEnabled(enabled) {
+        this._aiStatusRow.subtitle = enabled ? 'Enabling AI formatting' : 'Disabling AI formatting';
+
+        try {
+            await this._runCli(['ai-format-use', enabled ? (this._aiCurrentTier ?? 'high') : 'off']);
+            await this._refreshAiFormatting();
+            await this._refreshOllama();
+        } catch (error) {
+            this._aiStatusRow.subtitle = error.message;
+            await this._refreshAiFormatting();
+        }
+    }
+
+    async _selectAiTier(tier) {
+        this._aiStatusRow.subtitle = `Selecting ${tier}`;
+
+        try {
+            await this._runCli(['ai-format-use', tier]);
+            await this._refreshAiFormatting();
+            await this._refreshOllama();
+        } catch (error) {
+            this._aiStatusRow.subtitle = error.message;
+        }
+    }
+
+    async _setAiLogRetention(days) {
+        this._aiPromptLogRow.subtitle = `Setting retention to ${this._formatLogDays(days)}`;
+
+        try {
+            await this._runCli(['ai-format-logs', days]);
+            await this._refreshAiFormatting();
+        } catch (error) {
+            this._aiPromptLogRow.subtitle = error.message;
+        }
+    }
+
+    async _setAiPreload(enabled) {
+        this._aiStatusRow.subtitle = enabled ? 'Enabling preload' : 'Disabling preload';
+
+        try {
+            await this._runCli(['ai-format-preload', enabled ? 'on' : 'off']);
+            await this._refreshAiFormatting();
+        } catch (error) {
+            this._aiStatusRow.subtitle = error.message;
+            await this._refreshAiFormatting();
+        }
+    }
+
+    _formatLogDays(days) {
+        const numeric = Number(days);
+        if (!Number.isFinite(numeric) || numeric <= 0)
+            return 'off';
+        if (numeric === 1)
+            return '1 day';
+        if (numeric === 7)
+            return '1 week';
+
+        return `${numeric} days`;
+    }
+
+    _openPromptLogFolder() {
+        const path = this._aiPromptLogPath;
+        if (path)
+            this._openConfigFolder(path);
     }
 
     async _refreshOllama() {

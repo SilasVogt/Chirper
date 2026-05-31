@@ -17,8 +17,9 @@ use chirper_api::{send_request, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
-    FormatterBackend, ServiceCommand, TextInserter, WorkflowState, WHISPER_MODEL_NAMES,
+    AiHardwareTier, AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig,
+    DictationMode, FormatterBackend, ServiceCommand, TextInserter, WorkflowState,
+    WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -139,6 +140,26 @@ fn main() {
 
     if matches!(first.as_deref(), Some("formatter-use")) {
         formatter_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ai-format-current")) {
+        ai_format_current(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ai-format-use")) {
+        ai_format_use(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ai-format-logs")) {
+        ai_format_logs(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("ai-format-preload")) {
+        ai_format_preload(args.collect());
         return;
     }
 
@@ -893,6 +914,9 @@ fn formatter_current(args: Vec<String>) {
             "backend": config.formatter_backend.as_config_value(),
             "ollama_model": config.ollama_model,
             "ollama_command": config.ollama_command,
+            "ai_hardware_tier": config.ai_hardware_tier.as_config_value(),
+            "format_log_retention_days": config.format_log_retention_days,
+            "ollama_preload_on_recording": config.ollama_preload_on_recording,
             "codex_command": config.codex_command,
             "codex_model": config.codex_model,
             "codex_profile": config.codex_profile,
@@ -908,6 +932,18 @@ fn formatter_current(args: Vec<String>) {
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
+    println!(
+        "ai_hardware_tier: {}",
+        config.ai_hardware_tier.as_config_value()
+    );
+    println!(
+        "format_log_retention_days: {}",
+        config.format_log_retention_days
+    );
+    println!(
+        "ollama_preload_on_recording: {}",
+        config.ollama_preload_on_recording
+    );
     println!("codex_command: {}", config.codex_command);
     println!(
         "codex_model: {}",
@@ -986,6 +1022,152 @@ fn formatter_use(args: Vec<String>) {
         println!("codex_model: {model}");
     }
     println!("the daemon will use this for the next transcription");
+}
+
+fn ai_format_current(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let enabled = config.formatter_backend == FormatterBackend::Ollama;
+    let tiers = AiHardwareTier::all()
+        .iter()
+        .map(|tier| {
+            serde_json::json!({
+                "name": tier.as_config_value(),
+                "label": tier.label(),
+                "description": tier.description(),
+                "model": tier.ollama_model(),
+                "selected": *tier == config.ai_hardware_tier,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if json {
+        let value = serde_json::json!({
+            "enabled": enabled,
+            "backend": config.formatter_backend.as_config_value(),
+            "hardware_tier": config.ai_hardware_tier.as_config_value(),
+            "hardware_tier_label": config.ai_hardware_tier.label(),
+            "hardware_tier_description": config.ai_hardware_tier.description(),
+            "model": config.ollama_model,
+            "ollama_command": config.ollama_command,
+            "preload_on_recording": config.ollama_preload_on_recording,
+            "log_retention_days": config.format_log_retention_days,
+            "prompt_log_dir": ChirperConfig::default_prompt_log_dir().display().to_string(),
+            "tiers": tiers,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("enabled: {enabled}");
+    println!("backend: {}", config.formatter_backend.as_config_value());
+    println!(
+        "hardware_tier: {} ({})",
+        config.ai_hardware_tier.as_config_value(),
+        config.ai_hardware_tier.description()
+    );
+    println!("ollama_model: {}", config.ollama_model);
+    println!(
+        "preload_on_recording: {}",
+        config.ollama_preload_on_recording
+    );
+    println!("log_retention_days: {}", config.format_log_retention_days);
+    println!(
+        "prompt_log_dir: {}",
+        ChirperConfig::default_prompt_log_dir().display()
+    );
+}
+
+fn ai_format_use(args: Vec<String>) {
+    let Some(selection) = args.first() else {
+        eprintln!("usage: chirper ai-format-use <off|low|medium|high>");
+        std::process::exit(1);
+    };
+
+    if matches!(selection.as_str(), "off" | "none" | "disable" | "disabled") {
+        if let Err(error) = ChirperConfig::save_default_ai_formatting(Some(false), None, None, None)
+        {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        println!("AI formatting disabled");
+        println!("formatter: rules");
+        return;
+    }
+
+    let tier = match selection.parse::<AiHardwareTier>() {
+        Ok(tier) => tier,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("usage: chirper ai-format-use <off|low|medium|high>");
+            std::process::exit(1);
+        }
+    };
+    let config = load_config_or_exit();
+
+    if let Err(error) = ensure_ollama_model_available(&config.ollama_command, tier.ollama_model()) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    if let Err(error) =
+        ChirperConfig::save_default_ai_formatting(Some(true), Some(tier), None, None)
+    {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("AI formatting enabled");
+    println!("hardware_tier: {}", tier.as_config_value());
+    println!("ollama_model: {}", tier.ollama_model());
+}
+
+fn ai_format_logs(args: Vec<String>) {
+    let Some(value) = args.first() else {
+        eprintln!("usage: chirper ai-format-logs <off|0|1|7|30|days>");
+        std::process::exit(1);
+    };
+
+    let days = match value.as_str() {
+        "off" | "none" | "disable" | "disabled" => 0,
+        _ => match value.parse::<u64>() {
+            Ok(days) => days,
+            Err(_) => {
+                eprintln!("usage: chirper ai-format-logs <off|0|1|7|30|days>");
+                std::process::exit(1);
+            }
+        },
+    };
+
+    if let Err(error) = ChirperConfig::save_default_ai_formatting(None, None, Some(days), None) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("AI prompt log retention days: {days}");
+}
+
+fn ai_format_preload(args: Vec<String>) {
+    let Some(value) = args.first() else {
+        eprintln!("usage: chirper ai-format-preload <on|off>");
+        std::process::exit(1);
+    };
+
+    let enabled = match value.as_str() {
+        "on" | "true" | "yes" | "enable" | "enabled" => true,
+        "off" | "false" | "no" | "disable" | "disabled" => false,
+        _ => {
+            eprintln!("usage: chirper ai-format-preload <on|off>");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(error) = ChirperConfig::save_default_ai_formatting(None, None, None, Some(enabled)) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("AI model preload on recording: {enabled}");
 }
 
 fn ollama_list(args: Vec<String>) {

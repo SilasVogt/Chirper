@@ -36,7 +36,7 @@ Required for whisper.cpp Vulkan builds:
 
 Optional:
 
-- Ollama, for local LLM proofreading after the rules formatter
+- Ollama, for local AI formatting with Granite presets
 - Codex CLI, for OpenAI/Codex proofreading after the rules formatter
 - ROCm/HIP tooling, only if your distro/GPU stack supports the ROCm backend
 
@@ -142,12 +142,27 @@ enabled.
 
 ## Ollama Formatting
 
-Rules-based formatting works without Ollama. To enable local LLM proofreading:
+Rules-based formatting works without Ollama. To enable local AI formatting with
+the current recommended prompt and hardware preset:
 
 ```sh
-ollama pull gemma4
+ollama pull granite4.1:8b
 chirper ollama-list
-chirper formatter-use ollama gemma4:latest
+chirper ai-format-use high
+```
+
+The settings window exposes the same controls as an `AI Formatting` toggle plus
+low/medium/high hardware presets. Low uses `granite4.1:3b`; medium and high use
+`granite4.1:8b` for now. The daemon starts loading the selected Ollama model
+when recording starts, sends the raw transcript to the model after transcription,
+copies/pastes the model output, and asks Ollama to unload after formatting.
+Prompt logs are written under `~/.config/chirper/prompt-logs` by default and can
+be retained for off, 1 day, 1 week, or 30 days:
+
+```sh
+chirper ai-format-current
+chirper ai-format-logs 7
+chirper ai-format-preload on
 ```
 
 To compare all installed Ollama models on the same transcript:
