@@ -3,6 +3,7 @@ use std::{
     env,
     fmt::Write,
     fs,
+    io::{self, Write as IoWrite},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -80,6 +81,16 @@ fn main() {
 
     if matches!(first.as_deref(), Some("diagnose")) {
         diagnose();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("update-check")) {
+        update_check(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("update")) {
+        update(args.collect());
         return;
     }
 
@@ -335,6 +346,519 @@ fn print_api_response(response: &ApiResponse) {
     }
 
     println!("copied: {}", response.copied);
+}
+
+#[derive(Debug)]
+struct UpdateCheckOptions {
+    source_dir: Option<PathBuf>,
+    branch: Option<String>,
+    json: bool,
+}
+
+#[derive(Debug)]
+struct UpdateOptions {
+    source_dir: Option<PathBuf>,
+    branch: Option<String>,
+    profile: String,
+    with_whispercpp: bool,
+    with_service: bool,
+    with_gnome_extension: bool,
+    whisper_backend: Option<String>,
+    whisper_model: Option<String>,
+    reinstall: bool,
+    dry_run: bool,
+}
+
+#[derive(Debug)]
+struct SourceUpdateStatus {
+    source_dir: PathBuf,
+    branch: String,
+    upstream: String,
+    local_sha: String,
+    upstream_sha: String,
+    ahead: u32,
+    behind: u32,
+    dirty: bool,
+}
+
+fn update_check(args: Vec<String>) {
+    let options = match parse_update_check_args(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("usage: chirper update-check [--json] [--source-dir PATH] [--branch NAME]");
+            std::process::exit(2);
+        }
+    };
+
+    let status =
+        match source_update_status(options.source_dir.as_deref(), options.branch.as_deref()) {
+            Ok(status) => status,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+
+    if options.json {
+        let value = serde_json::json!({
+            "source_dir": status.source_dir,
+            "branch": status.branch,
+            "upstream": status.upstream,
+            "local_sha": status.local_sha,
+            "upstream_sha": status.upstream_sha,
+            "ahead": status.ahead,
+            "behind": status.behind,
+            "dirty": status.dirty,
+            "update_available": status.behind > 0,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    print_source_update_status(&status);
+}
+
+fn update(args: Vec<String>) {
+    let options = match parse_update_args(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("usage: chirper update [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+            std::process::exit(2);
+        }
+    };
+
+    let status =
+        match source_update_status(options.source_dir.as_deref(), options.branch.as_deref()) {
+            Ok(status) => status,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+
+    print_source_update_status(&status);
+
+    if status.dirty && !options.dry_run {
+        let _ = io::stdout().flush();
+        eprintln!();
+        eprintln!("source checkout has local changes; commit or stash them before updating");
+        std::process::exit(1);
+    }
+
+    if status.behind == 0 && !options.reinstall {
+        println!();
+        println!("already up to date; pass --reinstall to rebuild and reinstall anyway");
+        return;
+    }
+
+    let install_script = status.source_dir.join("scripts/install.sh");
+    if !install_script.is_file() {
+        eprintln!("installer not found: {}", install_script.display());
+        std::process::exit(1);
+    }
+
+    let mut command = Command::new(&install_script);
+    command
+        .current_dir(env::temp_dir())
+        .arg("--source-dir")
+        .arg(&status.source_dir)
+        .arg("--branch")
+        .arg(&status.branch)
+        .arg("--profile")
+        .arg(&options.profile);
+
+    if !options.with_whispercpp {
+        command.arg("--no-whispercpp");
+    }
+
+    if !options.with_service {
+        command.arg("--no-service");
+    }
+
+    if !options.with_gnome_extension {
+        command.arg("--no-gnome-extension");
+    }
+
+    if let Some(backend) = &options.whisper_backend {
+        command.arg("--whisper-backend").arg(backend);
+    }
+
+    if let Some(model) = &options.whisper_model {
+        command.arg("--whisper-model").arg(model);
+    }
+
+    if options.dry_run {
+        println!();
+        println!("would run:");
+        println!("  {}", shell_command_preview(&command));
+        return;
+    }
+
+    println!();
+    println!("running updater:");
+    println!("  {}", shell_command_preview(&command));
+
+    let status = match command.status() {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("failed to run {}: {error}", install_script.display());
+            std::process::exit(1);
+        }
+    };
+
+    if !status.success() {
+        eprintln!("update failed with status {status}");
+        std::process::exit(1);
+    }
+
+    println!();
+    println!("Chirper update finished.");
+    println!("If GNOME extension UI changed, log out and back in on Wayland to load the new extension code.");
+}
+
+fn parse_update_check_args(args: Vec<String>) -> Result<UpdateCheckOptions, String> {
+    let mut options = UpdateCheckOptions {
+        source_dir: None,
+        branch: None,
+        json: false,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json = true;
+                index += 1;
+            }
+            "--source-dir" => {
+                options.source_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--source-dir requires a path".to_string())?,
+                ));
+                index += 2;
+            }
+            "--branch" => {
+                options.branch = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--branch requires a name".to_string())?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            "-h" | "--help" => {
+                println!(
+                    "usage: chirper update-check [--json] [--source-dir PATH] [--branch NAME]"
+                );
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown update-check argument: {other}")),
+        }
+    }
+
+    Ok(options)
+}
+
+fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
+    let mut options = UpdateOptions {
+        source_dir: None,
+        branch: None,
+        profile: env::var("CHIRPER_BUILD_PROFILE").unwrap_or_else(|_| "release".to_string()),
+        with_whispercpp: false,
+        with_service: true,
+        with_gnome_extension: true,
+        whisper_backend: None,
+        whisper_model: None,
+        reinstall: false,
+        dry_run: false,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source-dir" => {
+                options.source_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--source-dir requires a path".to_string())?,
+                ));
+                index += 2;
+            }
+            "--branch" => {
+                options.branch = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--branch requires a name".to_string())?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            "--profile" => {
+                options.profile = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--profile requires debug or release".to_string())?
+                    .to_string();
+                index += 2;
+            }
+            "--with-whispercpp" => {
+                options.with_whispercpp = true;
+                index += 1;
+            }
+            "--whisper-backend" => {
+                options.with_whispercpp = true;
+                options.whisper_backend = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--whisper-backend requires a backend".to_string())?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            "--whisper-model" => {
+                options.with_whispercpp = true;
+                options.whisper_model = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--whisper-model requires a model name".to_string())?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            "--no-service" => {
+                options.with_service = false;
+                index += 1;
+            }
+            "--no-gnome-extension" => {
+                options.with_gnome_extension = false;
+                index += 1;
+            }
+            "--reinstall" => {
+                options.reinstall = true;
+                index += 1;
+            }
+            "--dry-run" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            "-h" | "--help" => {
+                println!("usage: chirper update [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown update argument: {other}")),
+        }
+    }
+
+    match options.profile.as_str() {
+        "debug" | "release" => {}
+        other => return Err(format!("unsupported profile: {other}")),
+    }
+
+    Ok(options)
+}
+
+fn source_update_status(
+    source_dir: Option<&Path>,
+    branch: Option<&str>,
+) -> Result<SourceUpdateStatus, String> {
+    let source_dir = resolve_source_dir(source_dir)?;
+    ensure_source_checkout(&source_dir)?;
+    let current_branch = git_stdout(&source_dir, &["branch", "--show-current"])?;
+    let branch = branch
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(current_branch);
+
+    if branch.is_empty() {
+        return Err("could not determine the current source branch".to_string());
+    }
+
+    let upstream = resolve_git_upstream(&source_dir, &branch)?;
+    let remote = upstream
+        .split('/')
+        .next()
+        .ok_or_else(|| format!("invalid upstream ref: {upstream}"))?;
+    git_stdout(&source_dir, &["fetch", "--prune", remote])?;
+
+    let local_sha = git_stdout(&source_dir, &["rev-parse", &branch])?;
+    let upstream_sha = git_stdout(&source_dir, &["rev-parse", &upstream])?;
+    let counts = git_stdout(
+        &source_dir,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{branch}...{upstream}"),
+        ],
+    )?;
+    let (ahead, behind) = parse_ahead_behind(&counts)?;
+    let dirty = !git_stdout(&source_dir, &["status", "--porcelain"])?.is_empty();
+
+    Ok(SourceUpdateStatus {
+        source_dir,
+        branch,
+        upstream,
+        local_sha,
+        upstream_sha,
+        ahead,
+        behind,
+        dirty,
+    })
+}
+
+fn resolve_source_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
+    }
+
+    if let Some(path) = env::var_os("CHIRPER_SOURCE_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(path) = env::current_exe()
+        .ok()
+        .and_then(|path| fs::canonicalize(path).ok())
+        .and_then(|path| find_source_ancestor(&path))
+    {
+        return Ok(path);
+    }
+
+    if let Some(path) = env::current_dir()
+        .ok()
+        .and_then(|path| find_source_ancestor(&path))
+    {
+        return Ok(path);
+    }
+
+    Ok(ChirperConfig::default_data_dir().join("source"))
+}
+
+fn find_source_ancestor(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        if ancestor.join("Cargo.toml").is_file() && ancestor.join("scripts/install.sh").is_file() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+
+    None
+}
+
+fn ensure_source_checkout(source_dir: &Path) -> Result<(), String> {
+    if !source_dir.join(".git").exists() {
+        return Err(format!(
+            "source checkout not found at {}; install Chirper first or pass --source-dir",
+            source_dir.display()
+        ));
+    }
+
+    if !source_dir.join("scripts/install.sh").is_file() {
+        return Err(format!(
+            "Chirper installer not found at {}",
+            source_dir.join("scripts/install.sh").display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_git_upstream(source_dir: &Path, branch: &str) -> Result<String, String> {
+    let branch_upstream = format!("{branch}@{{upstream}}");
+    if let Ok(upstream) = git_stdout(
+        source_dir,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            &branch_upstream,
+        ],
+    ) {
+        return Ok(upstream);
+    }
+
+    let upstream = format!("origin/{branch}");
+    if git_stdout(source_dir, &["rev-parse", "--verify", &upstream]).is_ok() {
+        return Ok(upstream);
+    }
+
+    Err(format!(
+        "branch `{branch}` has no upstream remote; push the branch or pass --branch main"
+    ))
+}
+
+fn parse_ahead_behind(value: &str) -> Result<(u32, u32), String> {
+    let mut parts = value.split_whitespace();
+    let ahead = parts
+        .next()
+        .ok_or_else(|| format!("unexpected git ahead/behind output: {value}"))?
+        .parse::<u32>()
+        .map_err(|_| format!("unexpected git ahead count: {value}"))?;
+    let behind = parts
+        .next()
+        .ok_or_else(|| format!("unexpected git ahead/behind output: {value}"))?
+        .parse::<u32>()
+        .map_err(|_| format!("unexpected git behind count: {value}"))?;
+
+    Ok((ahead, behind))
+}
+
+fn print_source_update_status(status: &SourceUpdateStatus) {
+    println!("source_dir: {}", status.source_dir.display());
+    println!("branch: {}", status.branch);
+    println!("upstream: {}", status.upstream);
+    println!("local: {}", short_commit(&status.local_sha));
+    println!("remote: {}", short_commit(&status.upstream_sha));
+    println!("ahead: {}", status.ahead);
+    println!("behind: {}", status.behind);
+    println!("dirty: {}", status.dirty);
+
+    if status.behind > 0 {
+        println!("status: update available");
+    } else if status.ahead > 0 {
+        println!("status: local branch is ahead of upstream");
+    } else {
+        println!("status: up to date");
+    }
+}
+
+fn short_commit(value: &str) -> &str {
+    value.get(..7).unwrap_or(value)
+}
+
+fn git_stdout(source_dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source_dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {:?} failed with status {}", args, output.status)
+        } else {
+            stderr
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn shell_command_preview(command: &Command) -> String {
+    let mut preview = shell_quote(command.get_program().to_string_lossy().as_ref());
+    for arg in command.get_args() {
+        preview.push(' ');
+        preview.push_str(&shell_quote(arg.to_string_lossy().as_ref()));
+    }
+    preview
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_./:=+".contains(character))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn parse_command(mut args: impl Iterator<Item = String>) -> ServiceCommand {

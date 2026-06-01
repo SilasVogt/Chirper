@@ -48,6 +48,13 @@ chirper audio-list
 chirper record-test 3
 ```
 
+Check for source-install updates:
+
+```sh
+chirper update-check
+chirper update
+```
+
 Test the full daemon path:
 
 ```sh
@@ -71,6 +78,7 @@ installed local extension.
 The durable docs are:
 
 - [Install](docs/INSTALL.md)
+- [Releases](docs/RELEASES.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local API](docs/API.md)
 - [Example Config](docs/config.example.toml)

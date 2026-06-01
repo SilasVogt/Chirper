@@ -11,5 +11,10 @@
       <summary>Paste after stopping recording</summary>
       <description>When enabled, stopping a recording from the extension restores the previous window and sends a paste shortcut after the daemon copies the transcript.</description>
     </key>
+    <key name="check-updates" type="b">
+      <default>false</default>
+      <summary>Check for Chirper updates</summary>
+      <description>When enabled, the GNOME Shell extension periodically checks whether the installed source checkout is behind its upstream branch and shows a notification when an update is available.</description>
+    </key>
   </schema>
 </schemalist>

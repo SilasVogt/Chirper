@@ -194,6 +194,44 @@ Each stage receives the previous stage output, can use placeholders like
 `{input}`, `{transcript}`, and `{outputs}`, and writes prompt/output files under
 `~/Documents/Chirper Workflow Runs` by default.
 
+## Updates
+
+For source-based installs, Chirper can check whether the installed checkout is
+behind its upstream branch:
+
+```sh
+chirper update-check
+chirper update-check --json
+```
+
+Apply an update with:
+
+```sh
+chirper update
+```
+
+That reruns the installed checkout's `scripts/install.sh`, pulls the configured
+branch, rebuilds Chirper, reinstalls the user systemd service and GNOME
+extension, and restarts the daemon. It skips whisper.cpp by default so normal
+app updates do not rebuild the inference backend or redownload models. To
+explicitly include whisper.cpp setup:
+
+```sh
+chirper update --with-whispercpp --whisper-backend vulkan --whisper-model base
+```
+
+Updates refuse to pull over local source changes. Commit or stash changes in the
+configured source checkout before running `chirper update`.
+
+The GNOME extension periodically runs the same update check when automatic
+update checks are enabled. When an update is available, it shows a Shell
+notification and enables `Update Chirper` in the panel menu. The settings window
+also has `Check` and `Update` buttons.
+
+On Wayland, updating extension files does not always reload the already-running
+GNOME Shell extension code. If the update changed extension UI or behavior, log
+out and back in after updating.
+
 ## Codex CLI Formatting
 
 If the OpenAI Codex CLI is installed and logged in, Chirper can use `codex exec`

@@ -69,6 +69,10 @@ This file is the project checklist. Keep it updated as implementation choices be
 
 - [x] Document frontend API.
 - [x] Add public install guide and one-line bootstrap script.
+- [x] Document stable, nightly, and update channel plan.
+- [x] Add explicit `chirper update` and `chirper update-check` commands.
+- [ ] Add release artifact packaging workflow.
+- [ ] Add nightly prerelease workflow.
 - [ ] Add KDE/Qt frontend notes.
 - [ ] Add status/widget examples for window managers.
 - [ ] Add packaging guide.
