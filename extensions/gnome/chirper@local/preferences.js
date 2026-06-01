@@ -455,7 +455,8 @@ class ChirperPreferencesBuilder {
         this._refreshModels();
         this._refreshAiFormatting();
         this._refreshOllama();
-        this._checkUpdates();
+        if (this._settings.get_boolean(CHECK_UPDATES_KEY))
+            this._checkUpdates();
     }
 
     async _checkUpdates() {
@@ -481,7 +482,7 @@ class ChirperPreferencesBuilder {
     }
 
     async _runUpdate() {
-        if (this._updateRunning)
+        if (this._updateRunning || this._updateChecking)
             return;
 
         this._updateRunning = true;
@@ -490,6 +491,8 @@ class ChirperPreferencesBuilder {
 
         try {
             await this._runCli(['update']);
+            this._updateRunning = false;
+            this._syncUpdateButtons();
             this._updateStatusRow.subtitle = 'Update finished. Relog if the GNOME extension UI changed.';
             await this._checkUpdates();
         } catch (error) {

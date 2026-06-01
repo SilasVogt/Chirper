@@ -675,10 +675,14 @@ fn source_update_status(
         return Err("could not determine the current source branch".to_string());
     }
 
-    git_stdout(&source_dir, &["fetch", "--prune", "origin"])?;
+    let upstream = resolve_git_upstream(&source_dir, &branch)?;
+    let remote = upstream
+        .split('/')
+        .next()
+        .ok_or_else(|| format!("invalid upstream ref: {upstream}"))?;
+    git_stdout(&source_dir, &["fetch", "--prune", remote])?;
 
     let local_sha = git_stdout(&source_dir, &["rev-parse", &branch])?;
-    let upstream = resolve_git_upstream(&source_dir, &branch)?;
     let upstream_sha = git_stdout(&source_dir, &["rev-parse", &upstream])?;
     let counts = git_stdout(
         &source_dir,

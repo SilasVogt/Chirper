@@ -1003,7 +1003,7 @@ export default class ChirperExtension extends Extension {
     }
 
     async _runUpdate() {
-        if (this._updateRunning)
+        if (this._updateRunning || this._updateChecking)
             return;
 
         this._updateRunning = true;
@@ -1014,6 +1014,7 @@ export default class ChirperExtension extends Extension {
             await this._runCli(['update']);
             this._updateStatus = null;
             this._updateNotifiedForSha = null;
+            this._updateRunning = false;
             this._syncUpdateMenu();
             Main.notify(
                 'Chirper update finished',

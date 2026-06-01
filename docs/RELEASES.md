@@ -112,7 +112,9 @@ extension code loaded until the user logs out and back in. The updater can copy
 new files immediately, but it should tell the user when a relog is required.
 
 When stable and nightly artifacts exist, the same CLI should grow channel-aware
-commands:
+commands. These `chirper update --channel` examples are planned syntax, not
+implemented yet; the current commands are `chirper update-check` and
+`chirper update` without a channel flag.
 
 ```sh
 chirper update --channel stable
@@ -128,7 +130,8 @@ changes.
 Recommended first version:
 
 - `chirper update-check` reports whether the installed source checkout is behind.
-- the GNOME extension periodically runs `chirper update-check --json`.
+- when automatic checks are enabled, the GNOME extension periodically runs
+  `chirper update-check --json`.
 - the GNOME extension shows a notification when an update is available.
 - the GNOME panel menu and settings window expose an explicit update button.
 
