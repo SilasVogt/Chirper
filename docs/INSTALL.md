@@ -220,6 +220,9 @@ explicitly include whisper.cpp setup:
 chirper update --with-whispercpp --whisper-backend vulkan --whisper-model base
 ```
 
+Updates refuse to pull over local source changes. Commit or stash changes in the
+configured source checkout before running `chirper update`.
+
 The GNOME extension periodically runs the same update check when automatic
 update checks are enabled. When an update is available, it shows a Shell
 notification and enables `Update Chirper` in the panel menu. The settings window

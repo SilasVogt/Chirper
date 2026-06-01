@@ -160,6 +160,11 @@ if [ -f "Cargo.toml" ] && [ -d "crates/chirper-cli" ] && [ -d "scripts" ]; then
 else
   if [ -d "$source_dir/.git" ]; then
     echo "Updating existing checkout: $source_dir"
+    if [ -n "$(git -C "$source_dir" status --porcelain)" ]; then
+      echo "source checkout has local changes: $source_dir" >&2
+      echo "Commit or stash them before updating, or run this script from the checkout to build without pulling." >&2
+      exit 1
+    fi
     git -C "$source_dir" fetch --prune origin
     git -C "$source_dir" checkout "$branch"
     git -C "$source_dir" pull --ff-only origin "$branch"

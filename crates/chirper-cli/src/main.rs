@@ -3,6 +3,7 @@ use std::{
     env,
     fmt::Write,
     fs,
+    io::{self, Write as IoWrite},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -364,7 +365,6 @@ struct UpdateOptions {
     with_gnome_extension: bool,
     whisper_backend: Option<String>,
     whisper_model: Option<String>,
-    allow_dirty: bool,
     reinstall: bool,
     dry_run: bool,
 }
@@ -440,11 +440,10 @@ fn update(args: Vec<String>) {
 
     print_source_update_status(&status);
 
-    if status.dirty && !options.allow_dirty && !options.dry_run {
+    if status.dirty && !options.dry_run {
+        let _ = io::stdout().flush();
         eprintln!();
-        eprintln!(
-            "source checkout has local changes; commit/stash them or pass --allow-dirty to let git handle the update"
-        );
+        eprintln!("source checkout has local changes; commit or stash them before updating");
         std::process::exit(1);
     }
 
@@ -571,7 +570,6 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
         with_gnome_extension: true,
         whisper_backend: None,
         whisper_model: None,
-        allow_dirty: false,
         reinstall: false,
         dry_run: false,
     };
@@ -629,10 +627,6 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
             }
             "--no-gnome-extension" => {
                 options.with_gnome_extension = false;
-                index += 1;
-            }
-            "--allow-dirty" => {
-                options.allow_dirty = true;
                 index += 1;
             }
             "--reinstall" => {

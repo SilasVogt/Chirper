@@ -97,6 +97,8 @@ chirper update
 `chirper update` reruns the checkout's `scripts/install.sh`, pulls the configured
 branch, rebuilds release binaries, reinstalls the user service, reinstalls the
 GNOME extension, and restarts the daemon. It skips whisper.cpp by default.
+It refuses to pull over local source changes; commit or stash changes in the
+configured source checkout before updating.
 
 Updates should remain user-local by default:
 
