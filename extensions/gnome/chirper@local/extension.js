@@ -38,14 +38,6 @@ const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
 const CHECK_UPDATES_KEY = 'check-updates';
 const UPDATE_INITIAL_CHECK_SECONDS = 20;
 const UPDATE_CHECK_SECONDS = 6 * 60 * 60;
-const COMMON_WHISPER_DOWNLOADS = [
-    'base',
-    'small.en',
-    'small',
-    'medium',
-    'large-v3-turbo',
-    'large-v3-turbo-q5_0',
-];
 
 function daemonSocketPath() {
     const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR');
@@ -270,8 +262,6 @@ export default class ChirperExtension extends Extension {
         this._pasteSwitch = null;
         this._audioMenu = null;
         this._screenAudioMenu = null;
-        this._modelMenu = null;
-        this._ollamaMenu = null;
         this._updateStatusItem = null;
         this._updateCheckItem = null;
         this._updateItem = null;
@@ -358,36 +348,12 @@ export default class ChirperExtension extends Extension {
                 this._refreshAudioMenu();
         });
 
-        this._screenAudioMenu = new PopupMenu.PopupSubMenuMenuItem('Screen Audio Once');
+        this._screenAudioMenu = new PopupMenu.PopupSubMenuMenuItem('Transcribe screen audio (once)');
         this._indicator.menu.addMenuItem(this._screenAudioMenu);
         this._screenAudioMenu.menu.addMenuItem(this._disabledItem('Loading outputs'));
         this._screenAudioMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
             if (isOpen)
                 this._refreshAudioMenu();
-        });
-
-        this._transcriptionMenu = new PopupMenu.PopupSubMenuMenuItem('Transcription');
-        this._indicator.menu.addMenuItem(this._transcriptionMenu);
-        this._transcriptionMenu.menu.addMenuItem(this._disabledItem('Loading profiles'));
-        this._transcriptionMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
-                this._refreshTranscriptionMenu();
-        });
-
-        this._modelMenu = new PopupMenu.PopupSubMenuMenuItem('Whisper Model');
-        this._indicator.menu.addMenuItem(this._modelMenu);
-        this._modelMenu.menu.addMenuItem(this._disabledItem('Loading models'));
-        this._modelMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
-                this._refreshModelMenu();
-        });
-
-        this._ollamaMenu = new PopupMenu.PopupSubMenuMenuItem('Formatter');
-        this._indicator.menu.addMenuItem(this._ollamaMenu);
-        this._ollamaMenu.menu.addMenuItem(this._disabledItem('Loading formatter'));
-        this._ollamaMenu.menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
-                this._refreshOllamaMenu();
         });
 
         this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -437,9 +403,6 @@ export default class ChirperExtension extends Extension {
         this._syncPrimaryAction();
         this._syncUpdateMenu();
         this._refreshAudioMenu();
-        this._refreshTranscriptionMenu();
-        this._refreshModelMenu();
-        this._refreshOllamaMenu();
     }
 
     _buildOverlay() {
@@ -698,7 +661,7 @@ export default class ChirperExtension extends Extension {
                 this._audioMenu.menu.addMenuItem(item);
             }
 
-            this._screenAudioMenu.label.text = 'Screen Audio Once';
+            this._screenAudioMenu.label.text = 'Transcribe screen audio (once)';
             this._screenAudioMenu.menu.addMenuItem(this._disabledItem('One recording only'));
             this._screenAudioMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -721,7 +684,7 @@ export default class ChirperExtension extends Extension {
             }
         } catch (error) {
             this._audioMenu.label.text = 'Input';
-            this._screenAudioMenu.label.text = 'Screen Audio Once';
+            this._screenAudioMenu.label.text = 'Transcribe screen audio (once)';
             this._audioMenu.menu.addMenuItem(this._disabledItem('Audio controls unavailable'));
             this._audioMenu.menu.addMenuItem(
                 this._disabledItem(shortLabel(error.message, MENU_ITEM_LABEL_MAX))
@@ -737,231 +700,6 @@ export default class ChirperExtension extends Extension {
             Main.notify('Chirper', 'Audio input updated');
         } catch (error) {
             Main.notify('Chirper', `Failed to select audio input: ${error.message}`);
-        }
-    }
-
-    async _refreshModelMenu() {
-        if (!this._modelMenu)
-            return;
-
-        this._modelMenu.menu.removeAll();
-
-        try {
-            const output = await this._runCli(['model-list', '--json']);
-            const data = JSON.parse(output);
-            const current = data.current?.name ?? 'unset';
-            const installed = data.installed ?? [];
-            const available = data.available ?? [];
-            const installedNames = new Set(installed.map(model => model.name));
-
-            this._modelMenu.label.text = `Whisper Model: ${current}`;
-            this._modelMenu.menu.addMenuItem(this._disabledItem(`Current: ${current}`));
-            this._modelMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            if (installed.length === 0) {
-                this._modelMenu.menu.addMenuItem(this._disabledItem('No local models found'));
-            } else {
-                for (const model of installed) {
-                    const label = model.name === current ? `✓ ${model.name}` : model.name;
-                    const item = new PopupMenu.PopupMenuItem(label);
-                    item.connect('activate', () => {
-                        this._selectWhisperModel(model.name);
-                    });
-                    this._modelMenu.menu.addMenuItem(item);
-                }
-            }
-
-            this._modelMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            this._modelMenu.menu.addMenuItem(this._disabledItem('Download and Select'));
-
-            for (const name of COMMON_WHISPER_DOWNLOADS) {
-                if (!available.some(model => model.name === name) || installedNames.has(name))
-                    continue;
-
-                const item = new PopupMenu.PopupMenuItem(name);
-                item.connect('activate', () => {
-                    this._downloadWhisperModel(name);
-                });
-                this._modelMenu.menu.addMenuItem(item);
-            }
-        } catch (error) {
-            this._modelMenu.label.text = 'Whisper Model';
-            this._modelMenu.menu.addMenuItem(this._disabledItem('Model controls unavailable'));
-            this._modelMenu.menu.addMenuItem(this._disabledItem(error.message));
-        }
-    }
-
-    async _selectWhisperModel(model) {
-        try {
-            await this._runCli(['model-use', model]);
-            Main.notify('Chirper', `Selected Whisper model: ${model}`);
-            await this._refreshModelMenu();
-        } catch (error) {
-            Main.notify('Chirper', `Failed to select model: ${error.message}`);
-        }
-    }
-
-    async _downloadWhisperModel(model) {
-        Main.notify('Chirper', `Downloading Whisper model: ${model}`);
-
-        try {
-            await this._runCli(['model-download', model, '--select']);
-            Main.notify('Chirper', `Selected Whisper model: ${model}`);
-            await this._refreshModelMenu();
-        } catch (error) {
-            Main.notify('Chirper', `Failed to download model: ${error.message}`);
-        }
-    }
-
-    async _refreshTranscriptionMenu() {
-        if (!this._transcriptionMenu)
-            return;
-
-        this._transcriptionMenu.menu.removeAll();
-
-        try {
-            const output = await this._runCli(['transcription-list', '--json']);
-            const data = JSON.parse(output);
-            const current = data.current?.profile ?? 'balanced';
-            const currentLabel = data.current?.label ?? current;
-            const profiles = data.profiles ?? [];
-
-            this._transcriptionMenu.label.text = `Transcription: ${currentLabel}`;
-            this._transcriptionMenu.menu.addMenuItem(
-                this._disabledItem(`Current: ${currentLabel}`)
-            );
-            this._transcriptionMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            for (const profile of profiles) {
-                const label = profile.selected
-                    ? `✓ ${profile.label ?? profile.name}`
-                    : `${profile.label ?? profile.name}`;
-                const item = new PopupMenu.PopupMenuItem(label);
-                item.connect('activate', () => {
-                    this._selectTranscriptionProfile(profile.name);
-                });
-                this._transcriptionMenu.menu.addMenuItem(item);
-            }
-        } catch (error) {
-            this._transcriptionMenu.label.text = 'Transcription';
-            this._transcriptionMenu.menu.addMenuItem(
-                this._disabledItem('Transcription controls unavailable')
-            );
-            this._transcriptionMenu.menu.addMenuItem(
-                this._disabledItem(shortLabel(error.message, MENU_ITEM_LABEL_MAX))
-            );
-        }
-    }
-
-    async _selectTranscriptionProfile(profile) {
-        try {
-            await this._runCli(['transcription-use', profile]);
-            Main.notify('Chirper', `Selected transcription profile: ${profile}`);
-            await this._refreshTranscriptionMenu();
-        } catch (error) {
-            Main.notify('Chirper', `Failed to select transcription profile: ${error.message}`);
-        }
-    }
-
-    async _refreshOllamaMenu() {
-        if (!this._ollamaMenu)
-            return;
-
-        this._ollamaMenu.menu.removeAll();
-
-        try {
-            const output = await this._runCli(['ollama-list', '--json']);
-            const data = JSON.parse(output);
-            const formatter = data.formatter ?? 'rules';
-            const current = data.current?.model ?? 'unset';
-            const models = data.models ?? [];
-
-            this._ollamaMenu.label.text = formatter === 'ollama'
-                ? `Ollama: ${shortLabel(current, MENU_STATUS_LABEL_MAX)}`
-                : `Formatter: ${formatter}`;
-            this._ollamaMenu.menu.addMenuItem(
-                this._disabledItem(`Current: ${formatter === 'ollama' ? current : formatter}`)
-            );
-            this._ollamaMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            const rulesItem = new PopupMenu.PopupMenuItem(
-                formatter === 'rules' ? '✓ Rules only' : 'Rules only'
-            );
-            rulesItem.connect('activate', () => {
-                this._selectFormatter('rules');
-            });
-            this._ollamaMenu.menu.addMenuItem(rulesItem);
-
-            const noneItem = new PopupMenu.PopupMenuItem(
-                formatter === 'none' ? '✓ No formatter' : 'No formatter'
-            );
-            noneItem.connect('activate', () => {
-                this._selectFormatter('none');
-            });
-            this._ollamaMenu.menu.addMenuItem(noneItem);
-
-            const codexItem = new PopupMenu.PopupMenuItem(
-                formatter === 'codex' ? '✓ Codex CLI' : 'Codex CLI'
-            );
-            codexItem.connect('activate', () => {
-                this._selectFormatter('codex');
-            });
-            this._ollamaMenu.menu.addMenuItem(codexItem);
-
-            this._ollamaMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            if (!data.available) {
-                this._ollamaMenu.menu.addMenuItem(this._disabledItem('Ollama unavailable'));
-                if (data.error)
-                    this._ollamaMenu.menu.addMenuItem(
-                        this._disabledItem(shortLabel(data.error, MENU_ITEM_LABEL_MAX))
-                    );
-                return;
-            }
-
-            if (models.length === 0) {
-                this._ollamaMenu.menu.addMenuItem(this._disabledItem('No Ollama models found'));
-                this._ollamaMenu.menu.addMenuItem(this._disabledItem('Run: ollama pull llama3.2'));
-                return;
-            }
-
-            this._ollamaMenu.menu.addMenuItem(this._disabledItem('Ollama models'));
-
-            for (const model of models) {
-                const active = formatter === 'ollama' && model.selected;
-                const label = active ? `✓ ${model.name}` : model.name;
-                const item = new PopupMenu.PopupMenuItem(shortLabel(label, MENU_ITEM_LABEL_MAX));
-                item.connect('activate', () => {
-                    this._selectOllamaModel(model.name);
-                });
-                this._ollamaMenu.menu.addMenuItem(item);
-            }
-        } catch (error) {
-            this._ollamaMenu.label.text = 'Formatter';
-            this._ollamaMenu.menu.addMenuItem(this._disabledItem('Formatter controls unavailable'));
-            this._ollamaMenu.menu.addMenuItem(
-                this._disabledItem(shortLabel(error.message, MENU_ITEM_LABEL_MAX))
-            );
-        }
-    }
-
-    async _selectFormatter(formatter) {
-        try {
-            await this._runCli(['formatter-use', formatter]);
-            Main.notify('Chirper', `Selected formatter: ${formatter}`);
-            await this._refreshOllamaMenu();
-        } catch (error) {
-            Main.notify('Chirper', `Failed to select formatter: ${error.message}`);
-        }
-    }
-
-    async _selectOllamaModel(model) {
-        try {
-            await this._runCli(['ollama-use', model]);
-            Main.notify('Chirper', `Selected Ollama model: ${model}`);
-            await this._refreshOllamaMenu();
-        } catch (error) {
-            Main.notify('Chirper', `Failed to select Ollama model: ${error.message}`);
         }
     }
 

@@ -63,8 +63,9 @@ What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`
 - builds `chirper` and `chirper-daemon` in release mode
-- symlinks `chirper`, `chirper-daemon`, `chirper-model-compare`,
-  `chirper-report-viewer`, and `chirper-test-workflow-builder` into
+- symlinks `chirper`, `chirper-daemon`, `chirper-onboarding`,
+  `chirper-model-compare`, `chirper-report-viewer`, and
+  `chirper-test-workflow-builder` into
   `~/.local/bin`
 - builds whisper.cpp with `--backend auto --model base`
 - writes a starter config only if `~/.config/chirper/config.toml` does not exist
@@ -104,6 +105,7 @@ CHIRPER_BUILD_PROFILE=release scripts/install-systemd-user-service.sh
 CHIRPER_BUILD_PROFILE=release scripts/install-gnome-extension.sh
 mkdir -p ~/.local/bin
 ln -sf "$PWD/scripts/run-model-compare.sh" ~/.local/bin/chirper-model-compare
+ln -sf "$PWD/scripts/run-onboarding.sh" ~/.local/bin/chirper-onboarding
 ln -sf "$PWD/scripts/run-report-viewer.sh" ~/.local/bin/chirper-report-viewer
 ln -sf "$PWD/scripts/run-test-workflow-builder.sh" ~/.local/bin/chirper-test-workflow-builder
 ```
@@ -173,6 +175,7 @@ chirper format-compare --report-dir ./chirper-reports "hello comma world period"
 chirper format-compare --custom-prompt "strict=Return only corrected final text." \
   --transcript "case-1=hello comma world period" \
   --report-dir ./chirper-reports
+chirper-onboarding
 chirper-model-compare
 chirper-report-viewer
 chirper-test-workflow-builder
@@ -186,6 +189,11 @@ Ollama models, saved Codex configs, prompt-input options, report storage, live
 current-model progress, elapsed runtime, hardware summary, custom prompt
 variants, and named transcript cases. Custom prompt comparisons write one report
 file per prompt variant.
+`chirper-onboarding` opens a guided GTK setup flow. It checks required commands
+and recommended Whisper/Ollama models, records one test passage, compares
+`medium`, `large-v3-turbo`, and `large-v3` transcription, compares the selected
+transcript through the local Ollama presets and optional Codex, then saves the
+selected config.
 `chirper-report-viewer` opens the saved reports and lets you filter by prompt,
 transcript, and model, with regular text and Markdown preview modes.
 `chirper-test-workflow-builder` opens a GTK app for chaining local Ollama stages

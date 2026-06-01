@@ -23,7 +23,14 @@ pub fn format_spoken_rules_with_vocabulary(
     let mut index = 0;
 
     while index < tokens.len() {
-        if let Some(consumed) = match_scratch_command(&tokens[index..]) {
+        if let Some((list_pieces, consumed)) = match_spoken_list(&tokens[index..], mode, vocabulary)
+        {
+            if !pieces.is_empty() && !matches!(pieces.last(), Some(RenderPiece::Newline(_))) {
+                pieces.push(RenderPiece::Newline(1));
+            }
+            pieces.extend(list_pieces);
+            index += consumed;
+        } else if let Some(consumed) = match_scratch_command(&tokens[index..]) {
             pieces.clear();
             index += consumed;
         } else if let Some((correction, consumed, terminator)) =
@@ -132,6 +139,239 @@ fn match_scratch_command(tokens: &[Token]) -> Option<usize> {
         ("scratch" | "delete", Some("that" | "this" | "it"), _, _) => Some(2),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpokenListKind {
+    Bullet,
+    Numbered,
+}
+
+fn match_spoken_list(
+    tokens: &[Token],
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> Option<(Vec<RenderPiece>, usize)> {
+    let (kind, mut index) = match_list_start(tokens)?;
+    let title = match_list_title(tokens, &mut index, mode, vocabulary);
+    let (items, consumed) = collect_list_items(&tokens[index..], mode, vocabulary)?;
+
+    if items.is_empty() {
+        return None;
+    }
+
+    let mut pieces = Vec::new();
+    if let Some(title) = title {
+        pieces.push(RenderPiece::Word(title));
+        pieces.push(RenderPiece::Punct(":"));
+        pieces.push(RenderPiece::Newline(1));
+    }
+
+    for (item_index, item) in items.into_iter().enumerate() {
+        let marker = match kind {
+            SpokenListKind::Bullet => "-".to_string(),
+            SpokenListKind::Numbered => format!("{}.", item_index + 1),
+        };
+        pieces.push(RenderPiece::Word(marker));
+        pieces.push(RenderPiece::Word(item));
+        pieces.push(RenderPiece::Newline(1));
+    }
+
+    Some((pieces, index + consumed))
+}
+
+fn match_list_start(tokens: &[Token]) -> Option<(SpokenListKind, usize)> {
+    for prefix in [0, 2, 3] {
+        if prefix == 2
+            && !(tokens.get(0)?.normalized == "this" && tokens.get(1)?.normalized == "is")
+        {
+            continue;
+        }
+        if prefix == 3
+            && !(tokens.get(0)?.normalized == "this"
+                && tokens.get(1)?.normalized == "is"
+                && matches!(tokens.get(2)?.normalized.as_str(), "a" | "the"))
+        {
+            continue;
+        }
+
+        if let Some((kind, consumed)) = match_list_kind(&tokens[prefix..]) {
+            return Some((kind, prefix + consumed));
+        }
+    }
+
+    None
+}
+
+fn match_list_kind(tokens: &[Token]) -> Option<(SpokenListKind, usize)> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+    let third = tokens.get(2).map(|token| token.normalized.as_str());
+
+    match (first, second, third) {
+        ("bullet", Some("point"), Some("list")) => Some((SpokenListKind::Bullet, 3)),
+        ("bullet", Some("list"), _) => Some((SpokenListKind::Bullet, 2)),
+        ("numbered" | "ordered", Some("list"), _) => Some((SpokenListKind::Numbered, 2)),
+        ("number", Some("list"), _) => Some((SpokenListKind::Numbered, 2)),
+        _ => None,
+    }
+}
+
+fn match_list_title(
+    tokens: &[Token],
+    index: &mut usize,
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> Option<String> {
+    let title_start = match tokens.get(*index).map(|token| token.normalized.as_str()) {
+        Some("titled") | Some("called") => *index + 1,
+        Some("with")
+            if tokens
+                .get(*index + 1)
+                .is_some_and(|token| token.normalized == "title") =>
+        {
+            *index + 2
+        }
+        _ => return None,
+    };
+
+    let mut title_end = title_start;
+    while title_end < tokens.len() {
+        if is_list_boundary_token(&tokens[title_end]) {
+            title_end += 1;
+            break;
+        }
+        title_end += 1;
+    }
+
+    if title_end == title_start || title_end >= tokens.len() {
+        return None;
+    }
+
+    let title = render_list_item(&tokens[title_start..title_end], mode, vocabulary)?;
+    *index = title_end;
+    Some(title)
+}
+
+fn collect_list_items(
+    tokens: &[Token],
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> Option<(Vec<String>, usize)> {
+    let mut items = Vec::new();
+    let mut current_start = 0;
+    let mut index = 0;
+
+    while index < tokens.len() {
+        if let Some(end_consumed) = match_list_end(&tokens[index..]) {
+            push_list_item(&mut items, &tokens[current_start..index], mode, vocabulary);
+            return Some((items, index + end_consumed));
+        }
+
+        if let Some(separator_consumed) = match_spoken_item_separator(&tokens[index..]) {
+            push_list_item(&mut items, &tokens[current_start..index], mode, vocabulary);
+            index += separator_consumed;
+            current_start = index;
+            continue;
+        }
+
+        if is_list_boundary_token(&tokens[index]) {
+            push_list_item(&mut items, &tokens[current_start..=index], mode, vocabulary);
+            index += 1;
+            current_start = index;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
+fn push_list_item(
+    items: &mut Vec<String>,
+    tokens: &[Token],
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) {
+    if let Some(item) = render_list_item(tokens, mode, vocabulary) {
+        items.push(item);
+    }
+}
+
+fn render_list_item(
+    tokens: &[Token],
+    mode: DictationMode,
+    vocabulary: &[VocabularyEntry],
+) -> Option<String> {
+    let mut raw = tokens
+        .iter()
+        .map(|token| token.raw.as_str())
+        .collect::<Vec<_>>();
+
+    while raw
+        .first()
+        .is_some_and(|token| matches!(normalize(token).as_str(), "and" | "or"))
+    {
+        raw.remove(0);
+    }
+
+    while raw
+        .last()
+        .is_some_and(|token| normalize(token).is_empty() || is_spoken_separator_word(token))
+    {
+        raw.pop();
+    }
+
+    let last = raw.last_mut()?;
+    *last =
+        last.trim_end_matches(|character| matches!(character, ',' | '.' | '?' | '!' | ':' | ';'));
+
+    let text = raw
+        .iter()
+        .copied()
+        .filter(|token| !token.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if text.trim().is_empty() {
+        return None;
+    }
+
+    let rendered = format_spoken_rules_with_vocabulary(&text, mode, vocabulary);
+    (!rendered.trim().is_empty()).then(|| rendered.trim().to_string())
+}
+
+fn match_list_end(tokens: &[Token]) -> Option<usize> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+    let third = tokens.get(2).map(|token| token.normalized.as_str());
+
+    match (first, second, third) {
+        ("end", Some("of"), Some("list")) => Some(3),
+        ("end", Some("list"), _) => Some(2),
+        _ => None,
+    }
+}
+
+fn match_spoken_item_separator(tokens: &[Token]) -> Option<usize> {
+    let first = tokens.first()?.normalized.as_str();
+    let second = tokens.get(1).map(|token| token.normalized.as_str());
+
+    match (first, second) {
+        ("comma" | "period" | "semicolon", _) => Some(1),
+        ("new", Some("line")) => Some(2),
+        ("next", Some("item")) => Some(2),
+        _ => None,
+    }
+}
+
+fn is_list_boundary_token(token: &Token) -> bool {
+    trailing_punctuation(&token.raw).is_some()
+}
+
+fn is_spoken_separator_word(token: &str) -> bool {
+    matches!(normalize(token).as_str(), "comma" | "period" | "semicolon")
 }
 
 fn match_pascal_case_command(tokens: &[Token]) -> Option<usize> {
@@ -1120,6 +1360,31 @@ mod tests {
         assert_eq!(
             format_spoken_rules("literal comma comma literal period", DictationMode::Auto),
             "comma, period"
+        );
+    }
+
+    #[test]
+    fn spoken_list_ranges_become_markdown_lists() {
+        assert_eq!(
+            format_spoken_rules(
+                "I need to write down accent-friendly words. This is a bullet point list: water, tomato, schedule, data, router, aluminium, privacy. End of list.",
+                DictationMode::Auto,
+            ),
+            "I need to write down accent-friendly words.\n- water\n- tomato\n- schedule\n- data\n- router\n- aluminium\n- privacy"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a bullet point list with title Accent Friendly Words: water, tomato. End of list. Note below.",
+                DictationMode::Auto,
+            ),
+            "Accent Friendly Words:\n- water\n- tomato\nNote below."
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a numbered list: push to PR, releases and nightly builds, auto update mechanism. End of list.",
+                DictationMode::Auto,
+            ),
+            "1. push to PR\n2. releases and nightly builds\n3. auto update mechanism"
         );
     }
 

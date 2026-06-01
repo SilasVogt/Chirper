@@ -54,6 +54,8 @@ const WHISPER_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("hi", "Hindi"),
     ("ar", "Arabic"),
 ];
+const ONBOARDING_WHISPER_MODELS: &[&str] = &["medium", "large-v3-turbo", "large-v3"];
+const ONBOARDING_OLLAMA_MODELS: &[&str] = &["granite4.1:3b", "granite4.1:8b", "olmo2:7b"];
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -74,6 +76,16 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("record-start")) {
+        record_start(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("record-stop")) {
+        record_stop(args.collect());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("transcribe-file")) {
         transcribe_file(args.collect());
         return;
@@ -91,6 +103,11 @@ fn main() {
 
     if matches!(first.as_deref(), Some("update")) {
         update(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("onboarding-check")) {
+        onboarding_check(args.collect());
         return;
     }
 
@@ -902,20 +919,127 @@ fn record_test(seconds: Option<&str>) {
     println!("channels: {}", audio.channels);
 }
 
+fn record_start(args: Vec<String>) {
+    let (json, state_path) = parse_record_state_args(args, "record-start");
+
+    if read_toggle_state(&state_path).is_some() {
+        eprintln!("recording is already active for {}", state_path.display());
+        std::process::exit(1);
+    }
+
+    let config = load_config_or_exit();
+    let recording =
+        match PipeWireRecorder::start_detached(PipeWireRecorderOptions::from_config(&config)) {
+            Ok(recording) => recording,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+
+    if let Err(error) = write_toggle_state(&state_path, &recording) {
+        let _ = PipeWireRecorder::stop_detached(&recording);
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    if json {
+        print_recording_json(&recording, &state_path);
+    } else {
+        println!("started recording: {}", recording.audio.path.display());
+        println!("pid: {}", recording.pid);
+        println!("state_path: {}", state_path.display());
+    }
+}
+
+fn record_stop(args: Vec<String>) {
+    let (json, state_path) = parse_record_state_args(args, "record-stop");
+    let Some(recording) = read_toggle_state(&state_path) else {
+        eprintln!("no active recording found at {}", state_path.display());
+        std::process::exit(1);
+    };
+
+    let audio = match PipeWireRecorder::stop_detached(&recording) {
+        Ok(audio) => audio,
+        Err(error) => {
+            let _ = fs::remove_file(&state_path);
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let _ = fs::remove_file(&state_path);
+
+    if json {
+        let value = serde_json::json!({
+            "path": audio.path,
+            "sample_rate_hz": audio.sample_rate_hz,
+            "channels": audio.channels,
+            "state_path": state_path,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+    } else {
+        println!("stopped recording: {}", audio.path.display());
+        println!("sample_rate_hz: {}", audio.sample_rate_hz);
+        println!("channels: {}", audio.channels);
+        println!("state_path: {}", state_path.display());
+    }
+}
+
+fn parse_record_state_args(args: Vec<String>, command: &str) -> (bool, PathBuf) {
+    let mut json = false;
+    let mut state_path = manual_record_state_path();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--state=") {
+            state_path = expand_user_path(value);
+            index += 1;
+        } else if arg == "--state" {
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("usage: chirper {command} [--json] [--state PATH]");
+                std::process::exit(1);
+            };
+            state_path = expand_user_path(value);
+            index += 2;
+        } else {
+            eprintln!("usage: chirper {command} [--json] [--state PATH]");
+            std::process::exit(1);
+        }
+    }
+
+    (json, state_path)
+}
+
+fn print_recording_json(recording: &DetachedRecording, state_path: &Path) {
+    let value = serde_json::json!({
+        "pid": recording.pid,
+        "path": recording.audio.path,
+        "sample_rate_hz": recording.audio.sample_rate_hz,
+        "channels": recording.audio.channels,
+        "state_path": state_path,
+    });
+    println!("{}", serde_json::to_string_pretty(&value).unwrap());
+}
+
 fn transcribe_file(args: Vec<String>) {
-    let (audio_path, model_path, profile) = match parse_transcribe_file_args(args) {
+    let (json, audio_path, model_path, profile) = match parse_transcribe_file_args(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("{error}");
             eprintln!(
-                "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+                "usage: chirper transcribe-file [--json] [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
             );
             std::process::exit(1);
         }
     };
     let Some(audio_path) = audio_path else {
         eprintln!(
-            "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+            "usage: chirper transcribe-file [--json] [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
         );
         std::process::exit(1);
     };
@@ -951,7 +1075,10 @@ fn transcribe_file(args: Vec<String>) {
         channels: 1,
     };
 
-    let transcript = match asr.transcribe(&audio) {
+    let started = Instant::now();
+    let (transcript, metrics) = run_with_resource_sampling(|| asr.transcribe(&audio));
+    let elapsed_ms = started.elapsed().as_millis();
+    let transcript = match transcript {
         Ok(transcript) => transcript,
         Err(error) => {
             eprintln!("{error}");
@@ -959,12 +1086,32 @@ fn transcribe_file(args: Vec<String>) {
         }
     };
 
+    if json {
+        let value = serde_json::json!({
+            "text": transcript.text,
+            "language": transcript.language,
+            "elapsed_ms": elapsed_ms,
+            "metrics": metrics_json(&metrics),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
     println!("{}", transcript.text);
 }
 
 fn parse_transcribe_file_args(
     args: Vec<String>,
-) -> Result<(Option<String>, Option<String>, Option<TranscriptionProfile>), String> {
+) -> Result<
+    (
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<TranscriptionProfile>,
+    ),
+    String,
+> {
+    let mut json = false;
     let mut profile = None;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -972,7 +1119,10 @@ fn parse_transcribe_file_args(
     while index < args.len() {
         let arg = &args[index];
 
-        if arg == "--fast" {
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if arg == "--fast" {
             profile = Some(TranscriptionProfile::Fast);
             index += 1;
         } else if arg == "--balanced" {
@@ -1005,6 +1155,7 @@ fn parse_transcribe_file_args(
     }
 
     Ok((
+        json,
         positional.first().cloned(),
         positional.get(1).cloned(),
         profile,
@@ -1063,6 +1214,114 @@ fn diagnose() {
     println!("runtime:");
     print_path_status(&runtime.whispercpp_command);
     print_path_status(&runtime.whispercpp_model_path);
+}
+
+fn onboarding_check(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let installed_whisper_models = installed_models();
+    let ollama_result = list_ollama_models(&config.ollama_command);
+    let (ollama_available, ollama_error, ollama_models) = match ollama_result {
+        Ok(models) => (true, None, models),
+        Err(error) => (false, Some(error.to_string()), Vec::new()),
+    };
+    let ollama_model_names = ollama_models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect::<Vec<_>>();
+
+    let value = serde_json::json!({
+        "commands": {
+            "pw_record": {
+                "command": "pw-record",
+                "available": command_available("pw-record"),
+            },
+            "whisper": {
+                "command": config.whispercpp_command,
+                "available": command_available(&config.whispercpp_command),
+            },
+            "ollama": {
+                "command": config.ollama_command,
+                "available": ollama_available,
+                "error": ollama_error,
+            },
+            "codex": {
+                "command": config.codex_command,
+                "available": command_available(&config.codex_command),
+            },
+        },
+        "whisper_models": ONBOARDING_WHISPER_MODELS
+            .iter()
+            .map(|name| {
+                let installed = installed_whisper_models.get(*name);
+                serde_json::json!({
+                    "name": name,
+                    "installed": installed.is_some(),
+                    "path": installed
+                        .map(|model| model.path.clone())
+                        .unwrap_or_else(|| ChirperConfig::default_model_path(name)),
+                    "bytes": installed.map(|model| model.bytes),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "ollama_models": ONBOARDING_OLLAMA_MODELS
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "installed": ollama_model_names.iter().any(|model| *model == *name),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "current": {
+            "whisper_model": config.whisper_model,
+            "whisper_model_path": config.whispercpp_model_path,
+            "formatter_backend": config.formatter_backend.as_config_value(),
+            "ollama_model": config.ollama_model,
+            "ai_hardware_tier": config.ai_hardware_tier.as_config_value(),
+            "codex_model": config.codex_model,
+            "codex_reasoning_effort": config.codex_reasoning_effort,
+        },
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("onboarding checks:");
+    for (key, command) in value["commands"].as_object().unwrap() {
+        let available = command["available"].as_bool().unwrap_or(false);
+        let command_name = command["command"].as_str().unwrap_or(key);
+        println!(
+            "  {key}: {} ({command_name})",
+            if available { "ok" } else { "missing" }
+        );
+    }
+    println!("whisper models:");
+    for model in value["whisper_models"].as_array().unwrap() {
+        println!(
+            "  {}: {}",
+            model["name"].as_str().unwrap_or("unknown"),
+            if model["installed"].as_bool().unwrap_or(false) {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+    }
+    println!("ollama models:");
+    for model in value["ollama_models"].as_array().unwrap() {
+        println!(
+            "  {}: {}",
+            model["name"].as_str().unwrap_or("unknown"),
+            if model["installed"].as_bool().unwrap_or(false) {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+    }
 }
 
 fn print_path_status(status: &chirper_platform::PathStatus) {
@@ -5006,9 +5265,26 @@ fn format_transcript_with_config(
         }
         FormatterBackend::Codex => {
             let preformatted = format_with_rules(config, transcript, mode)?;
-            CodexFormatter::new(CodexOptions::from_config(config))
-                .format_with_context(transcript, &preformatted, mode)
-                .map_err(|error| error.to_string())
+            match CodexFormatter::new(CodexOptions::from_config(config)).format_with_context(
+                transcript,
+                &preformatted,
+                mode,
+            ) {
+                Ok(text) => Ok(text),
+                Err(codex_error) => {
+                    eprintln!(
+                        "Codex formatter failed; trying Ollama fallback `{}`: {codex_error}",
+                        config.ollama_model
+                    );
+                    OllamaFormatter::new(OllamaOptions::from_config(config))
+                        .format_with_context(transcript, &preformatted, mode)
+                        .map_err(|fallback_error| {
+                            format!(
+                                "Codex formatter failed: {codex_error}; Ollama fallback failed: {fallback_error}"
+                            )
+                        })
+                }
+            }
         }
         FormatterBackend::LlamaCpp => {
             eprintln!("formatter backend llama.cpp is not implemented yet; using raw transcript");
@@ -5062,6 +5338,10 @@ fn load_config_or_exit() -> ChirperConfig {
 
 fn toggle_state_path() -> PathBuf {
     runtime_dir().join("toggle-state")
+}
+
+fn manual_record_state_path() -> PathBuf {
+    runtime_dir().join("record-state")
 }
 
 fn runtime_dir() -> PathBuf {

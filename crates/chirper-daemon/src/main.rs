@@ -428,9 +428,28 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
         }
         FormatterBackend::Codex => {
             let preformatted = format_with_rules(config, transcript)?;
-            CodexFormatter::new(CodexOptions::from_config(config))
-                .format_with_context(transcript, &preformatted, config.dictation_mode)
-                .map_err(|error| error.to_string())
+            match CodexFormatter::new(CodexOptions::from_config(config)).format_with_context(
+                transcript,
+                &preformatted,
+                config.dictation_mode,
+            ) {
+                Ok(text) => Ok(text),
+                Err(codex_error) => {
+                    eprintln!(
+                        "Codex formatter failed; trying Ollama fallback `{}`: {codex_error}",
+                        config.ollama_model
+                    );
+                    let fallback = OllamaFormatter::new(OllamaOptions::from_config(config))
+                        .format_with_context(transcript, &preformatted, config.dictation_mode)
+                        .map_err(|fallback_error| {
+                            format!(
+                                "Codex formatter failed: {codex_error}; Ollama fallback failed: {fallback_error}"
+                            )
+                        });
+                    stop_ollama_model_silent(&config.ollama_command, &config.ollama_model);
+                    fallback
+                }
+            }
         }
         FormatterBackend::LlamaCpp => {
             eprintln!(

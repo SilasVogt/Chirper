@@ -131,6 +131,7 @@ cargo run -p chirper-cli -- format-compare --no-ollama --codex "hello comma worl
 cargo run -p chirper-cli -- format-compare --no-ollama --codex-profile fast "hello comma world"
 cargo run -p chirper-cli -- format-compare --report-dir ./reports "hello comma world"
 cargo run -p chirper-cli -- format-compare --json "hello comma world"
+scripts/run-onboarding.sh
 scripts/run-model-compare.sh
 scripts/run-report-viewer.sh
 scripts/run-test-workflow-builder.sh
