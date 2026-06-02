@@ -2757,6 +2757,16 @@ fn normalize_optional_cli_value(value: &str) -> Option<String> {
     }
 }
 
+fn required_cli_value(args: &[String], index: usize, flag: &str) -> String {
+    let value = args.get(index + 1).map(|value| value.trim());
+    let Some(value) = value.filter(|value| !value.is_empty() && !value.starts_with('-')) else {
+        eprintln!("{flag} requires a value");
+        std::process::exit(1);
+    };
+
+    value.to_string()
+}
+
 fn push_config_override(config_overrides: &mut Vec<String>, value: &str) {
     let value = value.trim();
     if !value.is_empty() {
@@ -3258,7 +3268,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() && args.transcripts.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-service-tier TIER] [--codex-tier TIER] [--codex-config KEY=VALUE] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
         );
         std::process::exit(1);
     }
@@ -3670,9 +3680,8 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             codex_model = normalize_optional_cli_value(value);
             index += 1;
         } else if arg == "--codex-model" {
-            codex_model = args
-                .get(index + 1)
-                .and_then(|value| normalize_optional_cli_value(value));
+            let value = required_cli_value(&args, index, arg);
+            codex_model = normalize_optional_cli_value(&value);
             index += 2;
         } else if let Some(value) = arg
             .strip_prefix("--codex-effort=")
@@ -3681,9 +3690,8 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             codex_reasoning_effort = normalize_optional_cli_value(value);
             index += 1;
         } else if arg == "--codex-effort" || arg == "--codex-reasoning-effort" {
-            codex_reasoning_effort = args
-                .get(index + 1)
-                .and_then(|value| normalize_optional_cli_value(value));
+            let value = required_cli_value(&args, index, arg);
+            codex_reasoning_effort = normalize_optional_cli_value(&value);
             index += 2;
         } else if let Some(value) = arg
             .strip_prefix("--codex-service-tier=")
@@ -3692,20 +3700,16 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
             codex_service_tier = normalize_optional_cli_value(value);
             index += 1;
         } else if arg == "--codex-service-tier" || arg == "--codex-tier" {
-            codex_service_tier = args
-                .get(index + 1)
-                .and_then(|value| normalize_optional_cli_value(value));
+            let value = required_cli_value(&args, index, arg);
+            codex_service_tier = normalize_optional_cli_value(&value);
             index += 2;
         } else if let Some(value) = arg.strip_prefix("--codex-config=") {
             push_config_override(&mut codex_config_overrides, value);
             index += 1;
         } else if arg == "--codex-config" {
-            if let Some(value) = args.get(index + 1) {
-                push_config_override(&mut codex_config_overrides, value);
-                index += 2;
-            } else {
-                index += 1;
-            }
+            let value = required_cli_value(&args, index, arg);
+            push_config_override(&mut codex_config_overrides, &value);
+            index += 2;
         } else if let Some(value) = arg.strip_prefix("--codex-profile=") {
             push_model_values(&mut codex_profiles, value);
             index += 1;
