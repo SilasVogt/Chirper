@@ -782,12 +782,10 @@ class ChirperPreferencesBuilder {
             const data = JSON.parse(output);
             const backend = data.backend ?? 'rules';
             const enabled = backend === 'ollama' || backend === 'codex';
-            const currentTier = data.hardware_tier === 'high'
-                ? 'medium'
-                : (data.hardware_tier ?? 'medium');
+            const currentTier = data.hardware_tier ?? 'medium';
             const tiers = data.tiers ?? [];
             const tierDetails = new Map(tiers.map(tier => [tier.name, tier]));
-            this._aiCurrentTier = AI_FORMATTING_TIERS.includes(currentTier)
+            this._aiCurrentTier = tierDetails.has(currentTier)
                 ? currentTier
                 : 'medium';
 

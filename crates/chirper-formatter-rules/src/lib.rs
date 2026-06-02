@@ -33,6 +33,8 @@ pub fn format_spoken_rules_with_vocabulary(
         } else if let Some(consumed) = match_scratch_command(&tokens[index..]) {
             pieces.clear();
             index += consumed;
+        } else if let Some(consumed) = match_list_end(&tokens[index..]) {
+            index += consumed;
         } else if let Some((correction, consumed, terminator)) =
             match_spelling_command(&tokens[index..])
         {
@@ -266,6 +268,10 @@ fn collect_list_items(
         if let Some(end_consumed) = match_list_end(&tokens[index..]) {
             push_list_item(&mut items, &tokens[current_start..index], mode, vocabulary);
             return Some((items, index + end_consumed));
+        }
+
+        if match_scratch_command(&tokens[index..]).is_some() {
+            return None;
         }
 
         if let Some(separator_consumed) = match_spoken_item_separator(&tokens[index..]) {
@@ -1404,6 +1410,13 @@ mod tests {
         assert_eq!(
             format_spoken_rules(
                 "wrong start scratch that last sentence correct start",
+                DictationMode::Auto
+            ),
+            "correct start"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a bullet point list: first item, scratch that, end of list. correct start",
                 DictationMode::Auto
             ),
             "correct start"
