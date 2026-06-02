@@ -1999,6 +1999,9 @@ fn ai_format_current(args: Vec<String>) {
         let value = serde_json::json!({
             "enabled": enabled,
             "backend": config.formatter_backend.as_config_value(),
+            "last_enabled_backend": config
+                .last_ai_formatter_backend
+                .map(FormatterBackend::as_config_value),
             "model": config.ollama_model,
             "ollama_command": config.ollama_command,
             "preload_on_recording": config.ollama_preload_on_recording,
@@ -2011,6 +2014,13 @@ fn ai_format_current(args: Vec<String>) {
 
     println!("enabled: {enabled}");
     println!("backend: {}", config.formatter_backend.as_config_value());
+    println!(
+        "last_enabled_backend: {}",
+        config
+            .last_ai_formatter_backend
+            .map(FormatterBackend::as_config_value)
+            .unwrap_or("<none>")
+    );
     println!("ollama_model: {}", config.ollama_model);
     println!(
         "preload_on_recording: {}",

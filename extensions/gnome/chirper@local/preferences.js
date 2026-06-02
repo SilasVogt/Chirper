@@ -759,6 +759,8 @@ class ChirperPreferencesBuilder {
             this._currentAiFormatterBackend = backend;
             if (enabled)
                 this._lastEnabledAiFormatterBackend = backend;
+            else if (data.last_enabled_backend === 'ollama' || data.last_enabled_backend === 'codex')
+                this._lastEnabledAiFormatterBackend = data.last_enabled_backend;
 
             this._refreshingAiFormatting = true;
             this._aiFormattingSwitch.active = enabled;
