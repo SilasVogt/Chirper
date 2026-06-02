@@ -1543,6 +1543,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             this._formatStatusRow.subtitle = error.message;
         } finally {
             this._retryPromptButton.sensitive = true;
+            this._formatButton.sensitive = true;
             this._syncNavigation();
         }
     }
