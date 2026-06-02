@@ -1677,13 +1677,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
                 await runCli(['ollama-use', fallback, '--no-enable']);
                 await runCli(['codex-use', CODEX_MODEL, '--effort', CODEX_EFFORT, '--enable']);
             } else if (formatter.type === 'ollama') {
-                if (formatter.model === 'granite4.1:3b') {
-                    await runCli(['ai-format-use', 'low']);
-                } else if (formatter.model === 'granite4.1:8b') {
-                    await runCli(['ai-format-use', 'medium']);
-                } else {
-                    await runCli(['ollama-use', formatter.model, '--enable']);
-                }
+                await runCli(['ollama-use', formatter.model, '--enable']);
             }
 
             this._saveExtensionPreferences();

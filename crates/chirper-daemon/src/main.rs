@@ -938,9 +938,6 @@ fn write_prompt_log(
     let metadata = serde_json::json!({
         "generated_unix_seconds": timestamp,
         "model": config.ollama_model,
-        "hardware_tier": config.ai_hardware_tier.as_config_value(),
-        "hardware_tier_label": config.ai_hardware_tier.label(),
-        "hardware_tier_description": config.ai_hardware_tier.description(),
         "formatter_backend": config.formatter_backend.as_config_value(),
         "elapsed_ms": elapsed_ms,
         "log_retention_days": config.format_log_retention_days,

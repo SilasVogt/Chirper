@@ -131,9 +131,8 @@ and common downloadable models. Selecting a model updates
 transcription.
 
 The settings window includes an `AI Formatting` section. It can turn Ollama
-formatting on or off, choose low/medium/high hardware presets, control whether
-the model preloads when recording starts, and choose prompt-log retention. Low
-uses `granite4.1:3b`; medium and high currently use `granite4.1:8b`. When AI
+formatting on or off, select an installed Ollama model, control whether the model
+preloads when recording starts, and choose prompt-log retention. When AI
 formatting is enabled, the daemon sends the raw transcript to the selected model
 and copies/pastes the model output. Prompt logs are stored beside the config at
 `~/.config/chirper/prompt-logs`.

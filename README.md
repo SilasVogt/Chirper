@@ -13,7 +13,7 @@ This repo is early but usable for local testing on Linux. The current path is:
 - selectable transcription language for whisper.cpp
 - selectable balanced or fast whisper.cpp decoding profiles
 - local rules formatting with preferred spellings
-- optional Ollama AI formatting with hardware presets, model preload, and
+- optional Ollama AI formatting with model selection, model preload, and
   prompt/input/output logs
 - optional Codex CLI proofreading
 - clipboard insertion

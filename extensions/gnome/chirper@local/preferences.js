@@ -20,7 +20,6 @@ const COMMON_WHISPER_DOWNLOADS = [
     'large-v3',
 ];
 const RECOMMENDED_WHISPER_MODEL = 'large-v3-turbo';
-const AI_FORMATTING_TIERS = ['low', 'medium'];
 const AI_LOG_RETENTION_OPTIONS = [
     ['0', 'Off', 'Do not keep prompt logs.'],
     ['1', '1 Day', 'Delete prompt logs older than one day.'],
@@ -163,7 +162,6 @@ class ChirperPreferencesBuilder {
         this._transcriptionRows = [];
         this._installedRows = [];
         this._downloadRows = [];
-        this._aiTierControls = new Map();
         this._aiLogRows = [];
         this._ollamaRows = [];
         this._refreshingAiFormatting = false;
@@ -380,18 +378,6 @@ class ChirperPreferencesBuilder {
         });
         aiGroup.add(this._aiStatusRow);
 
-        for (const tier of AI_FORMATTING_TIERS) {
-            const row = new Adw.ActionRow({
-                title: tier,
-                subtitle: 'Loading',
-            });
-            const button = addButton(row, 'Use', () => this._selectAiTier(tier), {
-                sensitive: false,
-            });
-            this._aiTierControls.set(tier, {row, button});
-            aiGroup.add(row);
-        }
-
         this._codexProviderRow = new Adw.ActionRow({
             title: 'Use Codex',
             subtitle: 'Use Codex CLI for proofreading after local rules run.',
@@ -411,19 +397,6 @@ class ChirperPreferencesBuilder {
             sensitive: false,
         });
         aiGroup.add(openRouterRow);
-
-        this._customOllamaSwitch = new Adw.SwitchRow({
-            title: 'Select any installed Ollama model for formatting',
-            subtitle: 'Show all installed Ollama models instead of only the presets.',
-            active: false,
-        });
-        this._customOllamaSwitch.connect('notify::active', row => {
-            this._syncOllamaModelVisibility();
-
-            if (row.get_active())
-                this._refreshOllama();
-        });
-        aiGroup.add(this._customOllamaSwitch);
 
         this._aiPreloadSwitch = new Adw.SwitchRow({
             title: 'Preload While Recording',
@@ -464,7 +437,6 @@ class ChirperPreferencesBuilder {
         });
         addButton(refreshOllamaRow, 'Refresh', () => this._refreshOllama());
         this._ollamaModelsGroup.add(refreshOllamaRow);
-        this._syncOllamaModelVisibility();
 
         this._refreshAudioInputs();
         this._refreshLanguages();
@@ -782,12 +754,6 @@ class ChirperPreferencesBuilder {
             const data = JSON.parse(output);
             const backend = data.backend ?? 'rules';
             const enabled = backend === 'ollama' || backend === 'codex';
-            const currentTier = data.hardware_tier ?? 'medium';
-            const tiers = data.tiers ?? [];
-            const tierDetails = new Map(tiers.map(tier => [tier.name, tier]));
-            this._aiCurrentTier = tierDetails.has(currentTier)
-                ? currentTier
-                : 'medium';
 
             this._refreshingAiFormatting = true;
             this._aiFormattingSwitch.active = enabled;
@@ -795,8 +761,7 @@ class ChirperPreferencesBuilder {
             this._refreshingAiFormatting = false;
 
             if (backend === 'ollama') {
-                const tier = tierDetails.get(this._aiCurrentTier);
-                this._aiStatusRow.subtitle = `${tier?.label ?? this._aiCurrentTier}: ${data.model}`;
+                this._aiStatusRow.subtitle = `Ollama: ${data.model}`;
             } else if (backend === 'codex') {
                 this._aiStatusRow.subtitle = 'Codex CLI';
             } else {
@@ -805,19 +770,6 @@ class ChirperPreferencesBuilder {
 
             this._aiPromptLogRow.subtitle = `${data.prompt_log_dir ?? 'Prompt log folder'} - keep ${this._formatLogDays(data.log_retention_days)}`;
             this._aiPromptLogPath = data.prompt_log_dir;
-
-            for (const tierName of AI_FORMATTING_TIERS) {
-                const control = this._aiTierControls.get(tierName);
-                const tier = tierDetails.get(tierName);
-                const selected = backend === 'ollama' && tierName === this._aiCurrentTier;
-
-                control.row.title = tier?.label ?? tierName;
-                control.row.subtitle = [tier?.description, tier?.model]
-                    .filter(Boolean)
-                    .join(' - ') || 'Local Ollama formatting preset';
-                control.button.label = selected ? 'Selected' : 'Use';
-                control.button.sensitive = !selected;
-            }
 
             if (this._codexProviderButton) {
                 const selected = backend === 'codex';
@@ -838,11 +790,6 @@ class ChirperPreferencesBuilder {
             this._refreshingAiFormatting = false;
             this._aiStatusRow.subtitle = 'AI formatting controls unavailable';
             this._aiPromptLogRow.subtitle = error.message;
-            for (const control of this._aiTierControls.values()) {
-                control.row.subtitle = error.message;
-                control.button.label = 'Use';
-                control.button.sensitive = false;
-            }
             if (this._codexProviderButton)
                 this._codexProviderButton.sensitive = false;
             this._addInfoRow(this._aiLogGroup, this._aiLogRows, 'Check that Chirper has been built.');
@@ -853,24 +800,12 @@ class ChirperPreferencesBuilder {
         this._aiStatusRow.subtitle = enabled ? 'Enabling AI formatting' : 'Disabling AI formatting';
 
         try {
-            await this._runCli(['ai-format-use', enabled ? (this._aiCurrentTier ?? 'medium') : 'off']);
+            await this._runCli(enabled ? ['formatter-use', 'ollama'] : ['formatter-use', 'rules']);
             await this._refreshAiFormatting();
             await this._refreshOllama();
         } catch (error) {
             this._aiStatusRow.subtitle = error.message;
             await this._refreshAiFormatting();
-        }
-    }
-
-    async _selectAiTier(tier) {
-        this._aiStatusRow.subtitle = `Selecting ${tier}`;
-
-        try {
-            await this._runCli(['ai-format-use', tier]);
-            await this._refreshAiFormatting();
-            await this._refreshOllama();
-        } catch (error) {
-            this._aiStatusRow.subtitle = error.message;
         }
     }
 
@@ -913,11 +848,6 @@ class ChirperPreferencesBuilder {
         const path = this._aiPromptLogPath;
         if (path)
             this._openConfigFolder(path);
-    }
-
-    _syncOllamaModelVisibility() {
-        if (this._ollamaModelsGroup)
-            this._ollamaModelsGroup.set_visible(this._customOllamaSwitch?.get_active() ?? false);
     }
 
     async _refreshOllama() {

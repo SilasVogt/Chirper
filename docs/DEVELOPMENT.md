@@ -80,16 +80,16 @@ To inspect and select Ollama formatting models:
 ```sh
 cargo run -p chirper-cli -- ollama-list
 cargo run -p chirper-cli -- ai-format-current
-cargo run -p chirper-cli -- ai-format-use low
-cargo run -p chirper-cli -- ai-format-use high
+cargo run -p chirper-cli -- ollama-use granite4.1:8b
 cargo run -p chirper-cli -- ai-format-logs 7
 cargo run -p chirper-cli -- ai-format-preload on
 cargo run -p chirper-cli -- formatter-use rules
 ```
 
-`ai-format-use` selects a hardware preset and enables the Ollama formatter.
-`low` maps to `granite4.1:3b`; `medium` and `high` map to `granite4.1:8b` for
-now. `ai-format-use off` disables AI formatting and returns to local rules.
+`ollama-use` selects an installed local formatter model and enables the Ollama
+formatter. `formatter-use ollama` enables the currently selected Ollama model,
+and `ai-format-use off` or `formatter-use rules` disables AI formatting and
+returns to local rules.
 When enabled, the daemon sends the raw transcript to the selected Ollama model,
 uses the model output as the copied/pasted text, writes prompt/input/output logs
 under `~/.config/chirper/prompt-logs`, and prunes those logs according to
