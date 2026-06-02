@@ -1317,74 +1317,80 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         this._formatStatusRow.subtitle = 'Running local formatting models.';
         this._retryPromptGroup.visible = false;
 
-        for (const model of OLLAMA_MODELS) {
-            if (!ollamaInfo(this._checks, model)?.installed) {
-                this._addFormatResult(formatterIdForOllama(model), modelChoiceLabel(model), null, 'Model is not installed.');
-                continue;
+        try {
+            for (const model of OLLAMA_MODELS) {
+                if (!ollamaInfo(this._checks, model)?.installed) {
+                    this._addFormatResult(formatterIdForOllama(model), modelChoiceLabel(model), null, 'Model is not installed.');
+                    continue;
+                }
+
+                try {
+                    const data = await runCliJson([
+                        'format-compare',
+                        '--json',
+                        '--model',
+                        model,
+                        '--prompt-input',
+                        'raw',
+                        '--custom-prompt',
+                        EXTENSION_FORMATTING_PROMPT,
+                        whisperResult.transcript,
+                    ]);
+                    const result = data.results?.[0] ?? {};
+                    this._addFormatResult(
+                        formatterIdForOllama(model),
+                        modelChoiceLabel(model),
+                        result.output,
+                        result.error,
+                        result.elapsed_ms,
+                        result.metrics
+                    );
+                } catch (error) {
+                    this._addFormatResult(formatterIdForOllama(model), modelChoiceLabel(model), null, error.message);
+                }
             }
 
-            try {
-                const data = await runCliJson([
-                    'format-compare',
-                    '--json',
-                    '--model',
-                    model,
-                    '--prompt-input',
-                    'raw',
-                    '--custom-prompt',
-                    EXTENSION_FORMATTING_PROMPT,
-                    whisperResult.transcript,
-                ]);
-                const result = data.results?.[0] ?? {};
-                this._addFormatResult(
-                    formatterIdForOllama(model),
-                    modelChoiceLabel(model),
-                    result.output,
-                    result.error,
-                    result.elapsed_ms,
-                    result.metrics
-                );
-            } catch (error) {
-                this._addFormatResult(formatterIdForOllama(model), modelChoiceLabel(model), null, error.message);
+            if (this._includeCodexRow.active) {
+                this._formatStatusRow.subtitle = 'Running Codex formatting.';
+                try {
+                    const data = await runCliJson([
+                        'format-compare',
+                        '--json',
+                        '--no-ollama',
+                        '--codex',
+                        '--codex-model',
+                        CODEX_MODEL,
+                        '--codex-effort',
+                        CODEX_EFFORT,
+                        '--prompt-input',
+                        'raw',
+                        '--custom-prompt',
+                        EXTENSION_FORMATTING_PROMPT,
+                        whisperResult.transcript,
+                    ]);
+                    const result = data.results?.[0] ?? {};
+                    this._addFormatResult(
+                        'codex',
+                        `Codex (${CODEX_MODEL}, ${CODEX_EFFORT})`,
+                        result.output,
+                        result.error,
+                        result.elapsed_ms,
+                        result.metrics
+                    );
+                } catch (error) {
+                    this._addFormatResult('codex', 'Codex', null, error.message);
+                }
             }
+
+            this._formatStatusRow.subtitle = 'Formatting test finished. Choose an output to continue.';
+            this._retryPromptGroup.visible = this._formatResults.size > 0;
+        } catch (error) {
+            console.error(`formatting test failed: ${error.message}`);
+            this._formatStatusRow.subtitle = error.message;
+        } finally {
+            this._formatButton.sensitive = true;
+            this._syncNavigation();
         }
-
-        if (this._includeCodexRow.active) {
-            this._formatStatusRow.subtitle = 'Running Codex formatting.';
-            try {
-                const data = await runCliJson([
-                    'format-compare',
-                    '--json',
-                    '--no-ollama',
-                    '--codex',
-                    '--codex-model',
-                    CODEX_MODEL,
-                    '--codex-effort',
-                    CODEX_EFFORT,
-                    '--prompt-input',
-                    'raw',
-                    '--custom-prompt',
-                    EXTENSION_FORMATTING_PROMPT,
-                    whisperResult.transcript,
-                ]);
-                const result = data.results?.[0] ?? {};
-                this._addFormatResult(
-                    'codex',
-                    `Codex (${CODEX_MODEL}, ${CODEX_EFFORT})`,
-                    result.output,
-                    result.error,
-                    result.elapsed_ms,
-                    result.metrics
-                );
-            } catch (error) {
-                this._addFormatResult('codex', 'Codex', null, error.message);
-            }
-        }
-
-        this._formatStatusRow.subtitle = 'Formatting test finished. Choose an output to continue.';
-        this._formatButton.sensitive = true;
-        this._retryPromptGroup.visible = this._formatResults.size > 0;
-        this._syncNavigation();
     }
 
     _addFormatResult(id, title, output, error, elapsedMs = null, metrics = null) {
@@ -1709,7 +1715,8 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             const info = whisperInfo(this._checks, model);
             if (info?.installed && info.path) {
                 try {
-                    GLib.unlink(String(info.path));
+                    const file = Gio.File.new_for_path(String(info.path));
+                    file.delete(null);
                 } catch (error) {
                     console.debug(`failed to remove Whisper model ${model}: ${error.message}`);
                 }
