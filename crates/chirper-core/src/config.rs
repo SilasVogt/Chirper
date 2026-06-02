@@ -157,8 +157,8 @@ impl ChirperConfig {
         }
 
         if let Some(value) = table.get("last_ai_formatter_backend") {
-            let backend = parse_config_value("last_ai_formatter_backend", value)?;
-            if matches!(backend, FormatterBackend::Ollama | FormatterBackend::Codex) {
+            let backend: FormatterBackend = parse_config_value("last_ai_formatter_backend", value)?;
+            if backend.is_ai() {
                 config.last_ai_formatter_backend = Some(backend);
             }
         }
@@ -416,7 +416,7 @@ impl ChirperConfig {
             toml::Value::String(backend.as_config_value().to_string()),
         );
 
-        if matches!(backend, FormatterBackend::Ollama | FormatterBackend::Codex) {
+        if backend.is_ai() {
             table.insert(
                 "last_ai_formatter_backend".to_string(),
                 toml::Value::String(backend.as_config_value().to_string()),
@@ -551,7 +551,7 @@ impl ChirperConfig {
                 "formatter_backend".to_string(),
                 toml::Value::String(backend.as_config_value().to_string()),
             );
-            if matches!(backend, FormatterBackend::Ollama | FormatterBackend::Codex) {
+            if backend.is_ai() {
                 table.insert(
                     "last_ai_formatter_backend".to_string(),
                     toml::Value::String(backend.as_config_value().to_string()),
@@ -1001,6 +1001,10 @@ impl FormatterBackend {
             Self::LlamaCpp => "llama.cpp",
         }
     }
+
+    pub fn is_ai(self) -> bool {
+        matches!(self, Self::Ollama | Self::Codex | Self::LlamaCpp)
+    }
 }
 
 impl FromStr for FormatterBackend {
@@ -1288,6 +1292,7 @@ mod tests {
             pipewire_target = "alsa_input.usb-example.mic"
             gpu_backend = "HIP"
             formatter_backend = "llama.cpp"
+            last_ai_formatter_backend = "llama.cpp"
             insertion_backend = "i_bus"
             dictation_mode = "code"
             whisper_model = "small"
@@ -1322,6 +1327,10 @@ mod tests {
         );
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
         assert_eq!(config.formatter_backend, FormatterBackend::LlamaCpp);
+        assert_eq!(
+            config.last_ai_formatter_backend,
+            Some(FormatterBackend::LlamaCpp)
+        );
         assert_eq!(config.insertion_backend, InsertionBackend::IBus);
         assert_eq!(config.dictation_mode, DictationMode::Code);
         assert_eq!(config.whisper_model, "small");
@@ -1486,13 +1495,23 @@ mod tests {
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
 
+        ChirperConfig::save_formatter_selection(&path, FormatterBackend::LlamaCpp, None).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.formatter_backend, FormatterBackend::LlamaCpp);
+        assert_eq!(
+            config.last_ai_formatter_backend,
+            Some(FormatterBackend::LlamaCpp)
+        );
+        assert_eq!(config.ollama_model, "llama3.2:latest");
+
         ChirperConfig::save_formatter_selection(&path, FormatterBackend::Rules, None).unwrap();
         let config = ChirperConfig::load_from_path(&path).unwrap();
 
         assert_eq!(config.formatter_backend, FormatterBackend::Rules);
         assert_eq!(
             config.last_ai_formatter_backend,
-            Some(FormatterBackend::Ollama)
+            Some(FormatterBackend::LlamaCpp)
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
 

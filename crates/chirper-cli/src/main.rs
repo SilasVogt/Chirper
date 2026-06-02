@@ -1935,7 +1935,7 @@ fn formatter_current(args: Vec<String>) {
 
 fn formatter_use(args: Vec<String>) {
     let Some(selection) = args.first() else {
-        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex> [model]");
+        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex|llama.cpp> [model]");
         std::process::exit(1);
     };
 
@@ -1993,7 +1993,7 @@ fn formatter_use(args: Vec<String>) {
 fn ai_format_current(args: Vec<String>) {
     let json = args.iter().any(|arg| arg == "--json");
     let config = load_config_or_exit();
-    let enabled = config.formatter_backend == FormatterBackend::Ollama;
+    let enabled = config.formatter_backend.is_ai();
 
     if json {
         let value = serde_json::json!({

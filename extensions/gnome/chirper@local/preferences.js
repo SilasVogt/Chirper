@@ -75,6 +75,18 @@ function runDetached(argv) {
     );
 }
 
+function isAiFormatterBackend(backend) {
+    return backend === 'ollama' || backend === 'codex' || backend === 'llama.cpp';
+}
+
+function formatAiFormatterBackend(backend) {
+    if (backend === 'codex')
+        return 'Codex';
+    if (backend === 'llama.cpp')
+        return 'llama.cpp';
+    return 'Ollama';
+}
+
 function formatAccelerator(value) {
     if (!value)
         return 'Unset';
@@ -755,11 +767,11 @@ class ChirperPreferencesBuilder {
             const output = await this._runCli(['ai-format-current', '--json']);
             const data = JSON.parse(output);
             const backend = data.backend ?? 'rules';
-            const enabled = backend === 'ollama' || backend === 'codex';
+            const enabled = isAiFormatterBackend(backend);
             this._currentAiFormatterBackend = backend;
             if (enabled)
                 this._lastEnabledAiFormatterBackend = backend;
-            else if (data.last_enabled_backend === 'ollama' || data.last_enabled_backend === 'codex')
+            else if (isAiFormatterBackend(data.last_enabled_backend))
                 this._lastEnabledAiFormatterBackend = data.last_enabled_backend;
 
             this._refreshingAiFormatting = true;
@@ -771,6 +783,8 @@ class ChirperPreferencesBuilder {
                 this._aiStatusRow.subtitle = `Ollama: ${data.model}`;
             } else if (backend === 'codex') {
                 this._aiStatusRow.subtitle = 'Codex CLI';
+            } else if (backend === 'llama.cpp') {
+                this._aiStatusRow.subtitle = 'llama.cpp';
             } else {
                 this._aiStatusRow.subtitle = 'Off';
             }
@@ -804,13 +818,14 @@ class ChirperPreferencesBuilder {
     }
 
     async _setAiFormattingEnabled(enabled) {
-        const currentBackendIsAi = this._currentAiFormatterBackend === 'ollama'
-            || this._currentAiFormatterBackend === 'codex';
+        const currentBackendIsAi = isAiFormatterBackend(this._currentAiFormatterBackend);
         if (!enabled && currentBackendIsAi)
             this._lastEnabledAiFormatterBackend = this._currentAiFormatterBackend;
 
-        const backend = this._lastEnabledAiFormatterBackend === 'codex' ? 'codex' : 'ollama';
-        const label = backend === 'codex' ? 'Codex' : 'Ollama';
+        const backend = isAiFormatterBackend(this._lastEnabledAiFormatterBackend)
+            ? this._lastEnabledAiFormatterBackend
+            : 'ollama';
+        const label = formatAiFormatterBackend(backend);
         this._aiStatusRow.subtitle = enabled ? `Enabling ${label} formatting` : 'Disabling AI formatting';
 
         try {
