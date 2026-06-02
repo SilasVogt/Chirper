@@ -165,6 +165,8 @@ class ChirperPreferencesBuilder {
         this._aiLogRows = [];
         this._ollamaRows = [];
         this._refreshingAiFormatting = false;
+        this._currentAiFormatterBackend = 'rules';
+        this._lastEnabledAiFormatterBackend = 'ollama';
         this._updateChecking = false;
         this._updateRunning = false;
     }
@@ -754,6 +756,9 @@ class ChirperPreferencesBuilder {
             const data = JSON.parse(output);
             const backend = data.backend ?? 'rules';
             const enabled = backend === 'ollama' || backend === 'codex';
+            this._currentAiFormatterBackend = backend;
+            if (enabled)
+                this._lastEnabledAiFormatterBackend = backend;
 
             this._refreshingAiFormatting = true;
             this._aiFormattingSwitch.active = enabled;
@@ -797,10 +802,17 @@ class ChirperPreferencesBuilder {
     }
 
     async _setAiFormattingEnabled(enabled) {
-        this._aiStatusRow.subtitle = enabled ? 'Enabling AI formatting' : 'Disabling AI formatting';
+        const currentBackendIsAi = this._currentAiFormatterBackend === 'ollama'
+            || this._currentAiFormatterBackend === 'codex';
+        if (!enabled && currentBackendIsAi)
+            this._lastEnabledAiFormatterBackend = this._currentAiFormatterBackend;
+
+        const backend = this._lastEnabledAiFormatterBackend === 'codex' ? 'codex' : 'ollama';
+        const label = backend === 'codex' ? 'Codex' : 'Ollama';
+        this._aiStatusRow.subtitle = enabled ? `Enabling ${label} formatting` : 'Disabling AI formatting';
 
         try {
-            await this._runCli(enabled ? ['formatter-use', 'ollama'] : ['formatter-use', 'rules']);
+            await this._runCli(enabled ? ['formatter-use', backend] : ['formatter-use', 'rules']);
             await this._refreshAiFormatting();
             await this._refreshOllama();
         } catch (error) {
