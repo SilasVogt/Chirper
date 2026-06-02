@@ -1075,9 +1075,12 @@ fn transcribe_file(args: Vec<String>) {
         channels: 1,
     };
 
-    let started = Instant::now();
-    let (transcript, metrics) = run_with_resource_sampling(|| asr.transcribe(&audio));
-    let elapsed_ms = started.elapsed().as_millis();
+    let ((transcript, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+        let started = Instant::now();
+        let transcript = asr.transcribe(&audio);
+        let elapsed_ms = started.elapsed().as_millis();
+        (transcript, elapsed_ms)
+    });
     let transcript = match transcript {
         Ok(transcript) => transcript,
         Err(error) => {
@@ -3173,6 +3176,10 @@ struct FormatCompareArgs {
     include_codex_current: bool,
     codex_profiles: Vec<String>,
     all_codex_profiles: bool,
+    codex_model: Option<String>,
+    codex_reasoning_effort: Option<String>,
+    codex_service_tier: Option<String>,
+    codex_config_overrides: Vec<String>,
     include_rules: bool,
     keep_loaded: bool,
     prompt_input: ComparePromptInput,
@@ -3251,7 +3258,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() && args.transcripts.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
         );
         std::process::exit(1);
     }
@@ -3348,18 +3355,19 @@ fn format_compare(args: Vec<String>) {
                     model: model.clone(),
                     vocabulary: config.vocabulary.clone(),
                 });
-                let started = Instant::now();
-                let (result, metrics) = run_with_resource_sampling(|| {
-                    format_with_ollama_prompt_variant(
+                let ((result, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+                    let started = Instant::now();
+                    let result = format_with_ollama_prompt_variant(
                         &formatter,
                         &transcript,
                         &preformatted,
                         &config,
                         &args,
                         prompt_variant,
-                    )
+                    );
+                    let elapsed_ms = started.elapsed().as_millis();
+                    (result, elapsed_ms)
                 });
-                let elapsed_ms = started.elapsed().as_millis();
                 if !args.keep_loaded {
                     stop_ollama_model_silent(&config.ollama_command, model);
                 }
@@ -3402,6 +3410,7 @@ fn format_compare(args: Vec<String>) {
             }
         }
 
+        // Compare mode must report Codex errors as Codex results, not fallback output.
         for (name, options) in &codex_runs {
             for prompt_variant in &prompt_variants {
                 target_index += 1;
@@ -3426,18 +3435,19 @@ fn format_compare(args: Vec<String>) {
                     }),
                 );
                 let formatter = CodexFormatter::new(options.clone());
-                let started = Instant::now();
-                let (result, metrics) = run_with_resource_sampling(|| {
-                    format_with_codex_prompt_variant(
+                let ((result, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+                    let started = Instant::now();
+                    let result = format_with_codex_prompt_variant(
                         &formatter,
                         &transcript,
                         &preformatted,
                         &config,
                         &args,
                         prompt_variant,
-                    )
+                    );
+                    let elapsed_ms = started.elapsed().as_millis();
+                    (result, elapsed_ms)
                 });
-                let elapsed_ms = started.elapsed().as_millis();
 
                 let result = match result {
                     Ok(output) => FormatCompareResult {
@@ -3596,6 +3606,10 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut include_codex_current = false;
     let mut codex_profiles = Vec::new();
     let mut all_codex_profiles = false;
+    let mut codex_model = None;
+    let mut codex_reasoning_effort = None;
+    let mut codex_service_tier = None;
+    let mut codex_config_overrides = Vec::new();
     let mut include_rules = true;
     let mut keep_loaded = false;
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
@@ -3652,6 +3666,46 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--codex" {
             include_codex_current = true;
             index += 1;
+        } else if let Some(value) = arg.strip_prefix("--codex-model=") {
+            codex_model = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-model" {
+            codex_model = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--codex-effort=")
+            .or_else(|| arg.strip_prefix("--codex-reasoning-effort="))
+        {
+            codex_reasoning_effort = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-effort" || arg == "--codex-reasoning-effort" {
+            codex_reasoning_effort = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--codex-service-tier=")
+            .or_else(|| arg.strip_prefix("--codex-tier="))
+        {
+            codex_service_tier = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-service-tier" || arg == "--codex-tier" {
+            codex_service_tier = args
+                .get(index + 1)
+                .and_then(|value| normalize_optional_cli_value(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--codex-config=") {
+            push_config_override(&mut codex_config_overrides, value);
+            index += 1;
+        } else if arg == "--codex-config" {
+            if let Some(value) = args.get(index + 1) {
+                push_config_override(&mut codex_config_overrides, value);
+                index += 2;
+            } else {
+                index += 1;
+            }
         } else if let Some(value) = arg.strip_prefix("--codex-profile=") {
             push_model_values(&mut codex_profiles, value);
             index += 1;
@@ -3800,6 +3854,10 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         include_codex_current,
         codex_profiles,
         all_codex_profiles,
+        codex_model,
+        codex_reasoning_effort,
+        codex_service_tier,
+        codex_config_overrides,
         include_rules,
         keep_loaded,
         prompt_input,
@@ -4154,10 +4212,8 @@ fn resolve_codex_compare_runs(
     let mut runs = Vec::new();
 
     if args.include_codex_current {
-        runs.push((
-            format!("codex:{}", CodexOptions::from_config(config).label()),
-            CodexOptions::from_config(config),
-        ));
+        let options = codex_compare_options_from_args(config, args);
+        runs.push((format!("codex:{}", options.label()), options));
     }
 
     if args.all_codex_profiles {
@@ -4187,6 +4243,28 @@ fn resolve_codex_compare_runs(
     }
 
     runs
+}
+
+fn codex_compare_options_from_args(
+    config: &ChirperConfig,
+    args: &FormatCompareArgs,
+) -> CodexOptions {
+    let mut options = CodexOptions::from_config(config);
+
+    if let Some(model) = &args.codex_model {
+        options.model = Some(model.clone());
+    }
+    if let Some(reasoning_effort) = &args.codex_reasoning_effort {
+        options.reasoning_effort = Some(reasoning_effort.clone());
+    }
+    if let Some(service_tier) = &args.codex_service_tier {
+        options.service_tier = Some(service_tier.clone());
+    }
+    if !args.codex_config_overrides.is_empty() {
+        options.config_overrides = args.codex_config_overrides.clone();
+    }
+
+    options
 }
 
 #[derive(Debug, Clone, PartialEq)]

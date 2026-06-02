@@ -29,7 +29,7 @@ const SHORTCUT_OPTIONS = [
     '<Ctrl><Shift>space',
     'custom',
 ];
-const EXTENSION_FORMATTING_PROMPT = 'extension=Your job is to fix transcription errors and human made mistakes. the user may misspeak and try to correct themselves or specify specific spellings of words and names. Return only the cleaned-up final text. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. Do not explain your actions.\n\n{raw}';
+const EXTENSION_FORMATTING_PROMPT = 'extension=Your job is to fix transcription errors and human made mistakes. the user may misspeak and try to correct themselves or specify specific spellings of words and names. Return only the cleaned-up final text. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. Do not explain your actions.\n\n{raw_transcript}';
 const TEST_PROMPT = `Hello Chirper. I need to write down accent-friendly words. This is a bullet point list with title Accent Friendly Words: water, tomato, schedule, data, router, aluminium, privacy. End of list.
 
 Please write an email to Maya comma subject colon quarterly update period The meeting moved to Thursday at 9:30 AM comma the budget is $12,450 comma and the website is chirper dot local slash launch period
@@ -297,7 +297,7 @@ function compact(text, limit = 140) {
     if (value.length <= limit)
         return value || 'No output';
 
-    return `${value.slice(0, limit - 1)}...`;
+    return `${value.slice(0, limit - 3)}...`;
 }
 
 function formatElapsed(milliseconds) {
@@ -1073,7 +1073,10 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
     }
 
     async _downloadWhisperModel(model, row) {
+        const button = row.activatable_widget;
         row.subtitle = 'Downloading. This can take a while.';
+        if (button)
+            button.sensitive = false;
 
         try {
             await runCli(['model-download', model]);
@@ -1081,12 +1084,18 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             await this._refreshChecks();
         } catch (error) {
             row.subtitle = error.message;
+        } finally {
+            if (button)
+                button.sensitive = true;
         }
     }
 
     async _pullOllamaModel(model, row) {
         const command = commandInfo(this._checks, 'ollama').command || 'ollama';
+        const button = row.activatable_widget;
         row.subtitle = 'Pulling model. This can take a while.';
+        if (button)
+            button.sensitive = false;
 
         try {
             await runCommand([command, 'pull', model]);
@@ -1094,6 +1103,9 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             await this._refreshChecks();
         } catch (error) {
             row.subtitle = error.message;
+        } finally {
+            if (button)
+                button.sensitive = true;
         }
     }
 
@@ -1142,6 +1154,9 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             await this._runWhisperTests(data.path);
         } catch (error) {
             this._recordStatusRow.subtitle = error.message;
+            this._recordButton.label = 'Record Again';
+            this._recordButton.remove_css_class('destructive-action');
+            this._recordButton.add_css_class('suggested-action');
         } finally {
             this._recording = false;
             this._recordButton.sensitive = true;
@@ -1337,12 +1352,15 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         if (this._includeCodexRow.active) {
             this._formatStatusRow.subtitle = 'Running Codex formatting.';
             try {
-                await runCli(['codex-use', CODEX_MODEL, '--effort', CODEX_EFFORT, '--no-enable']);
                 const data = await runCliJson([
                     'format-compare',
                     '--json',
                     '--no-ollama',
                     '--codex',
+                    '--codex-model',
+                    CODEX_MODEL,
+                    '--codex-effort',
+                    CODEX_EFFORT,
                     '--prompt-input',
                     'raw',
                     '--custom-prompt',
@@ -1603,9 +1621,13 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         this._fallbackGroup.visible = formatter.type === 'codex';
         if (formatter.type === 'codex') {
             const fallback = this._recommendedFallbackModel();
-            const index = Math.max(0, OLLAMA_MODELS.indexOf(fallback));
             this._updatingRecommendationControls = true;
-            this._fallbackRow.selected = index;
+            this._fallbackRow.sensitive = Boolean(fallback);
+            this._fallbackRow.subtitle = fallback
+                ? 'Used as the configured Ollama model if you later switch away from Codex.'
+                : 'Pull a local Ollama formatter model before saving Codex.';
+            if (fallback)
+                this._fallbackRow.selected = OLLAMA_MODELS.indexOf(fallback);
             this._updatingRecommendationControls = false;
         }
     }
@@ -1617,14 +1639,21 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         if (firstSuccessfulLocal)
             return parseFormatterId(firstSuccessfulLocal[0]).model;
 
-        if (ollamaInfo(this._checks, 'granite4.1:8b')?.installed)
-            return 'granite4.1:8b';
+        const candidates = ['granite4.1:8b', 'granite4.1:3b', ...OLLAMA_MODELS];
+        for (const model of new Set(candidates)) {
+            if (ollamaInfo(this._checks, model)?.installed)
+                return model;
+        }
 
-        return 'granite4.1:3b';
+        return null;
     }
 
     _selectedFallbackModel() {
-        return OLLAMA_MODELS[this._fallbackRow.selected] ?? this._recommendedFallbackModel();
+        const selected = OLLAMA_MODELS[this._fallbackRow.selected];
+        if (selected && ollamaInfo(this._checks, selected)?.installed)
+            return selected;
+
+        return null;
     }
 
     async _saveRecommendation() {
@@ -1637,6 +1666,8 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
 
             if (formatter.type === 'codex') {
                 const fallback = this._selectedFallbackModel();
+                if (!fallback)
+                    throw new Error('Codex needs an installed Ollama fallback. Pull a local formatter model, then save again.');
                 await runCli(['ollama-use', fallback, '--no-enable']);
                 await runCli(['codex-use', CODEX_MODEL, '--effort', CODEX_EFFORT, '--enable']);
             } else if (formatter.type === 'ollama') {

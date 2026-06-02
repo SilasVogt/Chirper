@@ -14,10 +14,10 @@ done
 
 repo_root="$(cd "$(dirname "$script_path")/.." && pwd)"
 
-if [[ -x "$repo_root/target/debug/chirper" ]]; then
-  export CHIRPER_CLI="$repo_root/target/debug/chirper"
-elif [[ -x "$repo_root/target/release/chirper" ]]; then
+if [[ -x "$repo_root/target/release/chirper" ]]; then
   export CHIRPER_CLI="$repo_root/target/release/chirper"
+elif [[ -x "$repo_root/target/debug/chirper" ]]; then
+  export CHIRPER_CLI="$repo_root/target/debug/chirper"
 else
   export CHIRPER_CLI="${CHIRPER_CLI:-chirper}"
 fi
