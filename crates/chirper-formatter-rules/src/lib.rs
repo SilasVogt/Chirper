@@ -291,7 +291,11 @@ fn collect_list_items(
         index += 1;
     }
 
-    None
+    if current_start < tokens.len() {
+        push_list_item(&mut items, &tokens[current_start..], mode, vocabulary);
+    }
+
+    (!items.is_empty()).then_some((items, index))
 }
 
 fn push_list_item(
@@ -1391,6 +1395,13 @@ mod tests {
                 DictationMode::Auto,
             ),
             "1. push to PR\n2. releases and nightly builds\n3. auto update mechanism"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a bullet point list: apples, oranges, bananas.",
+                DictationMode::Auto,
+            ),
+            "- apples\n- oranges\n- bananas"
         );
     }
 
