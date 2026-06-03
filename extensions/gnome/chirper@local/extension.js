@@ -789,6 +789,11 @@ export default class ChirperExtension extends Extension {
             this._updateStatusItem.label.text = 'Updates: checking';
         } else if (this._updateStatus?.error) {
             this._updateStatusItem.label.text = 'Updates: check failed';
+        } else if (
+            this._updateStatus?.mode === 'releases' &&
+            this._updateStatus.latest_tag === null
+        ) {
+            this._updateStatusItem.label.text = 'Updates: no release tags found';
         } else if (this._updateStatus?.update_available) {
             if (this._updateStatus.mode === 'releases' && this._updateStatus.latest_tag)
                 this._updateStatusItem.label.text = `Updates: ${this._updateStatus.latest_tag} available`;

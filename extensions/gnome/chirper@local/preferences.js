@@ -225,7 +225,10 @@ class ChirperPreferencesBuilder {
         generalGroup.add(updateCheckRow);
 
         const updateMode = this._settings.get_string(UPDATE_MODE_KEY) || 'canary';
-        const updateModeIndex = Math.max(0, UPDATE_MODES.indexOf(updateMode));
+        const defaultUpdateModeIndex = UPDATE_MODES.indexOf('canary');
+        const updateModeIndex = UPDATE_MODES.includes(updateMode)
+            ? UPDATE_MODES.indexOf(updateMode)
+            : defaultUpdateModeIndex;
         const updateModeRow = new Adw.ComboRow({
             title: 'Update Mode',
             subtitle: 'Releases follow numbered tags. Canary follows main.',
@@ -548,8 +551,11 @@ class ChirperPreferencesBuilder {
 
     _formatUpdateStatus(data) {
         if (data.mode === 'releases') {
+            if (data.latest_tag === null)
+                return 'Release: no release tags found';
+
             const current = data.current_tag ?? 'no release';
-            const latest = data.latest_tag ?? 'no release tags';
+            const latest = data.latest_tag;
 
             if (data.update_available)
                 return `Release update available: ${current} -> ${latest}`;
