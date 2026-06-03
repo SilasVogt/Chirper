@@ -9,7 +9,7 @@ use chirper_core::{
 };
 
 pub const AI_FORMATTING_PROMPT_TEMPLATE: &str = "\
-Your job is to fix transcription errors and human made mistakes. The user may misspeak and try to correct themselves or specify specific spellings of words and names. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. Remove any spoken edits you have applied from the transcript. Do not explain your actions. Return only the cleaned-up final text. This is the original transcript: {transcript}";
+Your job is to fix transcription errors and human made mistakes. The user may misspeak and try to correct themselves or specify specific spellings of words and names. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. After applying a spoken instruction, remove the instruction words from the final text. Do not explain your actions. Return only the cleaned-up final text. This is the original transcript: {transcript}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaOptions {
