@@ -284,6 +284,15 @@ fn collect_list_items(
         if is_list_boundary_token(&tokens[index]) {
             push_list_item(&mut items, &tokens[current_start..=index], mode, vocabulary);
             index += 1;
+            if terminal_punctuation(&tokens[index - 1].raw).is_some() && index < tokens.len() {
+                if let Some(separator_consumed) = match_spoken_item_separator(&tokens[index..]) {
+                    index += separator_consumed;
+                    current_start = index;
+                    continue;
+                }
+
+                return Some((items, index));
+            }
             current_start = index;
             continue;
         }
@@ -1402,6 +1411,20 @@ mod tests {
                 DictationMode::Auto,
             ),
             "- apples\n- oranges\n- bananas"
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a bullet point list: apples, oranges, bananas. Please reply to John.",
+                DictationMode::Auto,
+            ),
+            "- apples\n- oranges\n- bananas\nPlease reply to John."
+        );
+        assert_eq!(
+            format_spoken_rules(
+                "This is a bullet point list: finish by Friday. next item include screenshots.",
+                DictationMode::Auto,
+            ),
+            "- finish by Friday\n- include screenshots"
         );
     }
 
