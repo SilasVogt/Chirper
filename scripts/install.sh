@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_url="${CHIRPER_REPO_URL:-https://github.com/SilasVogt/Chirper.git}"
 branch="${CHIRPER_BRANCH:-main}"
+ref="${CHIRPER_REF:-}"
 source_dir="${CHIRPER_SOURCE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/chirper/source}"
 bin_dir="${CHIRPER_BIN_DIR:-$HOME/.local/bin}"
 build_profile="${CHIRPER_BUILD_PROFILE:-release}"
@@ -26,6 +27,7 @@ One-line install:
 Options:
   --repo URL                  Git repository URL.
   --branch NAME              Git branch to install. Default: main.
+  --ref REF                   Git ref to install, such as a release tag.
   --source-dir PATH          Source checkout path. Default: ~/.local/share/chirper/source.
   --bin-dir PATH             Symlink destination for chirper binaries. Default: ~/.local/bin.
   --profile debug|release    Cargo build profile. Default: release.
@@ -37,7 +39,7 @@ Options:
   -h, --help                 Show this help.
 
 Environment overrides:
-  CHIRPER_REPO_URL, CHIRPER_BRANCH, CHIRPER_SOURCE_DIR, CHIRPER_BIN_DIR,
+  CHIRPER_REPO_URL, CHIRPER_BRANCH, CHIRPER_REF, CHIRPER_SOURCE_DIR, CHIRPER_BIN_DIR,
   CHIRPER_BUILD_PROFILE, CHIRPER_WHISPER_BACKEND, CHIRPER_WHISPER_MODEL.
 USAGE
 }
@@ -50,6 +52,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --branch)
       branch="${2:?missing value for --branch}"
+      shift 2
+      ;;
+    --ref)
+      ref="${2:?missing value for --ref}"
       shift 2
       ;;
     --source-dir)
@@ -165,9 +171,13 @@ else
       echo "Commit or stash them before updating, or run this script from the checkout to build without pulling." >&2
       exit 1
     fi
-    git -C "$source_dir" fetch --prune origin
-    git -C "$source_dir" checkout "$branch"
-    git -C "$source_dir" pull --ff-only origin "$branch"
+    git -C "$source_dir" fetch --prune --tags origin
+    if [ -n "$ref" ]; then
+      git -C "$source_dir" checkout "$ref"
+    else
+      git -C "$source_dir" checkout "$branch"
+      git -C "$source_dir" pull --ff-only origin "$branch"
+    fi
   else
     if [ -e "$source_dir" ]; then
       echo "source directory exists but is not a git checkout: $source_dir" >&2
@@ -176,7 +186,12 @@ else
 
     echo "Cloning $repo_url to $source_dir"
     mkdir -p "$(dirname "$source_dir")"
-    git clone --branch "$branch" "$repo_url" "$source_dir"
+    if [ -n "$ref" ]; then
+      git clone "$repo_url" "$source_dir"
+      git -C "$source_dir" checkout "$ref"
+    else
+      git clone --branch "$branch" "$repo_url" "$source_dir"
+    fi
   fi
 
   repo_root="$source_dir"

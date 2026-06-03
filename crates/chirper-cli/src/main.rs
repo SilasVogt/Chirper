@@ -106,6 +106,11 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("uninstall")) {
+        uninstall(args.collect());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("onboarding-check")) {
         onboarding_check(args.collect());
         return;
@@ -369,6 +374,7 @@ fn print_api_response(response: &ApiResponse) {
 struct UpdateCheckOptions {
     source_dir: Option<PathBuf>,
     branch: Option<String>,
+    mode: UpdateMode,
     json: bool,
 }
 
@@ -376,6 +382,7 @@ struct UpdateCheckOptions {
 struct UpdateOptions {
     source_dir: Option<PathBuf>,
     branch: Option<String>,
+    mode: UpdateMode,
     profile: String,
     with_whispercpp: bool,
     with_service: bool,
@@ -386,8 +393,70 @@ struct UpdateOptions {
     dry_run: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateMode {
+    Releases,
+    Canary,
+}
+
+impl UpdateMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Releases => "releases",
+            Self::Canary => "canary",
+        }
+    }
+}
+
 #[derive(Debug)]
-struct SourceUpdateStatus {
+enum UpdateStatus {
+    Releases(ReleaseUpdateStatus),
+    Canary(CanaryUpdateStatus),
+}
+
+impl UpdateStatus {
+    fn source_dir(&self) -> &Path {
+        match self {
+            Self::Releases(status) => &status.source_dir,
+            Self::Canary(status) => &status.source_dir,
+        }
+    }
+
+    fn dirty(&self) -> bool {
+        match self {
+            Self::Releases(status) => status.dirty,
+            Self::Canary(status) => status.dirty,
+        }
+    }
+
+    fn update_available(&self) -> bool {
+        match self {
+            Self::Releases(status) => status.update_available,
+            Self::Canary(status) => status.behind > 0,
+        }
+    }
+
+    fn target_ref(&self) -> Result<UpdateTargetRef, String> {
+        match self {
+            Self::Releases(status) => {
+                let latest = status.latest.as_ref().ok_or_else(|| {
+                    "no release tags found; use `chirper update --mode canary` for main".to_string()
+                })?;
+                Ok(UpdateTargetRef::Ref(latest.tag.clone()))
+            }
+            Self::Canary(status) => Ok(UpdateTargetRef::Branch(status.branch.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum UpdateTargetRef {
+    Branch(String),
+    Ref(String),
+}
+
+#[derive(Debug)]
+struct CanaryUpdateStatus {
     source_dir: PathBuf,
     branch: String,
     upstream: String,
@@ -398,42 +467,59 @@ struct SourceUpdateStatus {
     dirty: bool,
 }
 
+#[derive(Debug)]
+struct ReleaseUpdateStatus {
+    source_dir: PathBuf,
+    local_sha: String,
+    current: Option<ReleaseTag>,
+    latest: Option<ReleaseTag>,
+    dirty: bool,
+    update_available: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseTag {
+    tag: String,
+    version: ReleaseVersion,
+    sha: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
 fn update_check(args: Vec<String>) {
     let options = match parse_update_check_args(args) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("usage: chirper update-check [--json] [--source-dir PATH] [--branch NAME]");
+            eprintln!("usage: chirper update-check [--json] [--mode releases|canary] [--source-dir PATH] [--branch NAME]");
             std::process::exit(2);
         }
     };
 
-    let status =
-        match source_update_status(options.source_dir.as_deref(), options.branch.as_deref()) {
-            Ok(status) => status,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        };
+    let status = match update_status(
+        options.mode,
+        options.source_dir.as_deref(),
+        options.branch.as_deref(),
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     if options.json {
-        let value = serde_json::json!({
-            "source_dir": status.source_dir,
-            "branch": status.branch,
-            "upstream": status.upstream,
-            "local_sha": status.local_sha,
-            "upstream_sha": status.upstream_sha,
-            "ahead": status.ahead,
-            "behind": status.behind,
-            "dirty": status.dirty,
-            "update_available": status.behind > 0,
-        });
+        let value = update_status_json(&status);
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
         return;
     }
 
-    print_source_update_status(&status);
+    print_update_status(&status);
 }
 
 fn update(args: Vec<String>) {
@@ -441,36 +527,51 @@ fn update(args: Vec<String>) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("usage: chirper update [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+            eprintln!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
             std::process::exit(2);
         }
     };
 
-    let status =
-        match source_update_status(options.source_dir.as_deref(), options.branch.as_deref()) {
-            Ok(status) => status,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        };
+    let status = match update_status(
+        options.mode,
+        options.source_dir.as_deref(),
+        options.branch.as_deref(),
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
-    print_source_update_status(&status);
+    print_update_status(&status);
 
-    if status.dirty && !options.dry_run {
+    if status.dirty() && !options.dry_run {
         let _ = io::stdout().flush();
         eprintln!();
         eprintln!("source checkout has local changes; commit or stash them before updating");
         std::process::exit(1);
     }
 
-    if status.behind == 0 && !options.reinstall {
+    if !status.update_available() && !options.reinstall {
         println!();
-        println!("already up to date; pass --reinstall to rebuild and reinstall anyway");
+        if matches!(&status, UpdateStatus::Releases(status) if status.latest.is_none()) {
+            println!("no release tags found; use `chirper update --mode canary` for main");
+        } else {
+            println!("already up to date; pass --reinstall to rebuild and reinstall anyway");
+        }
         return;
     }
 
-    let install_script = status.source_dir.join("scripts/install.sh");
+    let target_ref = match status.target_ref() {
+        Ok(target_ref) => target_ref,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    let install_script = status.source_dir().join("scripts/install.sh");
     if !install_script.is_file() {
         eprintln!("installer not found: {}", install_script.display());
         std::process::exit(1);
@@ -480,11 +581,18 @@ fn update(args: Vec<String>) {
     command
         .current_dir(env::temp_dir())
         .arg("--source-dir")
-        .arg(&status.source_dir)
-        .arg("--branch")
-        .arg(&status.branch)
+        .arg(status.source_dir())
         .arg("--profile")
         .arg(&options.profile);
+
+    match target_ref {
+        UpdateTargetRef::Branch(branch) => {
+            command.arg("--branch").arg(branch);
+        }
+        UpdateTargetRef::Ref(ref_name) => {
+            command.arg("--ref").arg(ref_name);
+        }
+    }
 
     if !options.with_whispercpp {
         command.arg("--no-whispercpp");
@@ -535,10 +643,40 @@ fn update(args: Vec<String>) {
     println!("If GNOME extension UI changed, log out and back in on Wayland to load the new extension code.");
 }
 
+fn uninstall(args: Vec<String>) {
+    let source_dir = match resolve_source_dir(None) {
+        Ok(source_dir) => source_dir,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let uninstall_script = source_dir.join("scripts/uninstall.sh");
+
+    if !uninstall_script.is_file() {
+        eprintln!("uninstaller not found: {}", uninstall_script.display());
+        std::process::exit(1);
+    }
+
+    let status = match Command::new(&uninstall_script).args(args).status() {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("failed to run {}: {error}", uninstall_script.display());
+            std::process::exit(1);
+        }
+    };
+
+    if !status.success() {
+        eprintln!("uninstall failed with status {status}");
+        std::process::exit(1);
+    }
+}
+
 fn parse_update_check_args(args: Vec<String>) -> Result<UpdateCheckOptions, String> {
     let mut options = UpdateCheckOptions {
         source_dir: None,
         branch: None,
+        mode: default_update_mode()?,
         json: false,
     };
     let mut index = 0;
@@ -564,9 +702,16 @@ fn parse_update_check_args(args: Vec<String>) -> Result<UpdateCheckOptions, Stri
                 );
                 index += 2;
             }
+            "--mode" | "--channel" => {
+                options.mode = parse_update_mode(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--mode requires releases or canary".to_string())?,
+                )?;
+                index += 2;
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: chirper update-check [--json] [--source-dir PATH] [--branch NAME]"
+                    "usage: chirper update-check [--json] [--mode releases|canary] [--source-dir PATH] [--branch NAME]"
                 );
                 std::process::exit(0);
             }
@@ -581,6 +726,7 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
     let mut options = UpdateOptions {
         source_dir: None,
         branch: None,
+        mode: default_update_mode()?,
         profile: env::var("CHIRPER_BUILD_PROFILE").unwrap_or_else(|_| "release".to_string()),
         with_whispercpp: false,
         with_service: true,
@@ -607,6 +753,13 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
                         .ok_or_else(|| "--branch requires a name".to_string())?
                         .to_string(),
                 );
+                index += 2;
+            }
+            "--mode" | "--channel" => {
+                options.mode = parse_update_mode(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--mode requires releases or canary".to_string())?,
+                )?;
                 index += 2;
             }
             "--profile" => {
@@ -655,7 +808,7 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
                 index += 1;
             }
             "-h" | "--help" => {
-                println!("usage: chirper update [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+                println!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown update argument: {other}")),
@@ -670,30 +823,49 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
     Ok(options)
 }
 
-fn source_update_status(
+fn default_update_mode() -> Result<UpdateMode, String> {
+    match env::var("CHIRPER_UPDATE_MODE") {
+        Ok(value) if !value.trim().is_empty() => parse_update_mode(&value),
+        _ => Ok(UpdateMode::Canary),
+    }
+}
+
+fn parse_update_mode(value: &str) -> Result<UpdateMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "release" | "releases" | "stable" => Ok(UpdateMode::Releases),
+        "canary" | "main" | "source" => Ok(UpdateMode::Canary),
+        other => Err(format!(
+            "unsupported update mode `{other}`; use releases or canary"
+        )),
+    }
+}
+
+fn update_status(
+    mode: UpdateMode,
     source_dir: Option<&Path>,
     branch: Option<&str>,
-) -> Result<SourceUpdateStatus, String> {
+) -> Result<UpdateStatus, String> {
+    match mode {
+        UpdateMode::Releases => release_update_status(source_dir).map(UpdateStatus::Releases),
+        UpdateMode::Canary => canary_update_status(source_dir, branch).map(UpdateStatus::Canary),
+    }
+}
+
+fn canary_update_status(
+    source_dir: Option<&Path>,
+    branch: Option<&str>,
+) -> Result<CanaryUpdateStatus, String> {
     let source_dir = resolve_source_dir(source_dir)?;
     ensure_source_checkout(&source_dir)?;
-    let current_branch = git_stdout(&source_dir, &["branch", "--show-current"])?;
     let branch = branch
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-        .unwrap_or(current_branch);
+        .unwrap_or_else(|| "main".to_string());
 
-    if branch.is_empty() {
-        return Err("could not determine the current source branch".to_string());
-    }
+    git_stdout(&source_dir, &["fetch", "--prune", "origin", &branch])?;
+    let upstream = format!("origin/{branch}");
 
-    let upstream = resolve_git_upstream(&source_dir, &branch)?;
-    let remote = upstream
-        .split('/')
-        .next()
-        .ok_or_else(|| format!("invalid upstream ref: {upstream}"))?;
-    git_stdout(&source_dir, &["fetch", "--prune", remote])?;
-
-    let local_sha = git_stdout(&source_dir, &["rev-parse", &branch])?;
+    let local_sha = git_stdout(&source_dir, &["rev-parse", "HEAD"])?;
     let upstream_sha = git_stdout(&source_dir, &["rev-parse", &upstream])?;
     let counts = git_stdout(
         &source_dir,
@@ -701,13 +873,13 @@ fn source_update_status(
             "rev-list",
             "--left-right",
             "--count",
-            &format!("{branch}...{upstream}"),
+            &format!("HEAD...{upstream}"),
         ],
     )?;
     let (ahead, behind) = parse_ahead_behind(&counts)?;
     let dirty = !git_stdout(&source_dir, &["status", "--porcelain"])?.is_empty();
 
-    Ok(SourceUpdateStatus {
+    Ok(CanaryUpdateStatus {
         source_dir,
         branch,
         upstream,
@@ -717,6 +889,96 @@ fn source_update_status(
         behind,
         dirty,
     })
+}
+
+fn release_update_status(source_dir: Option<&Path>) -> Result<ReleaseUpdateStatus, String> {
+    let source_dir = resolve_source_dir(source_dir)?;
+    ensure_source_checkout(&source_dir)?;
+    git_stdout(&source_dir, &["fetch", "--prune", "--tags", "origin"])?;
+
+    let local_sha = git_stdout(&source_dir, &["rev-parse", "HEAD"])?;
+    let current = current_release_tag(&source_dir)?;
+    let latest = latest_release_tag(&source_dir)?;
+    let dirty = !git_stdout(&source_dir, &["status", "--porcelain"])?.is_empty();
+    let update_available = match (&current, &latest) {
+        (_, None) => false,
+        (Some(current), Some(latest)) if current.sha == latest.sha => false,
+        (Some(current), Some(latest)) => latest.version > current.version,
+        (None, Some(latest)) => latest.sha != local_sha,
+    };
+
+    Ok(ReleaseUpdateStatus {
+        source_dir,
+        local_sha,
+        current,
+        latest,
+        dirty,
+        update_available,
+    })
+}
+
+fn current_release_tag(source_dir: &Path) -> Result<Option<ReleaseTag>, String> {
+    let tags = git_stdout(source_dir, &["tag", "--points-at", "HEAD"])?;
+    let mut releases = Vec::new();
+
+    for tag in tags.lines().map(str::trim).filter(|tag| !tag.is_empty()) {
+        if let Some(version) = parse_release_version_tag(tag) {
+            let sha = git_stdout(source_dir, &["rev-list", "-n", "1", tag])?;
+            releases.push(ReleaseTag {
+                tag: tag.to_string(),
+                version,
+                sha,
+            });
+        }
+    }
+
+    releases.sort_by_key(|release| release.version);
+    Ok(releases.pop())
+}
+
+fn latest_release_tag(source_dir: &Path) -> Result<Option<ReleaseTag>, String> {
+    let tags = git_stdout(source_dir, &["tag", "--list"])?;
+    let mut releases = Vec::new();
+
+    for tag in tags.lines().map(str::trim).filter(|tag| !tag.is_empty()) {
+        if let Some(version) = parse_release_version_tag(tag) {
+            let sha = git_stdout(source_dir, &["rev-list", "-n", "1", tag])?;
+            releases.push(ReleaseTag {
+                tag: tag.to_string(),
+                version,
+                sha,
+            });
+        }
+    }
+
+    releases.sort_by_key(|release| release.version);
+    Ok(releases.pop())
+}
+
+fn parse_release_version_tag(tag: &str) -> Option<ReleaseVersion> {
+    let value = tag.strip_prefix('v').unwrap_or(tag);
+    let mut parts = value.split('.');
+    let major = parse_version_part(parts.next()?)?;
+    let minor = parse_version_part(parts.next()?)?;
+    let patch = parse_version_part(parts.next()?)?;
+
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some(ReleaseVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn parse_version_part(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    value.parse().ok()
 }
 
 fn resolve_source_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
@@ -774,30 +1036,6 @@ fn ensure_source_checkout(source_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_git_upstream(source_dir: &Path, branch: &str) -> Result<String, String> {
-    let branch_upstream = format!("{branch}@{{upstream}}");
-    if let Ok(upstream) = git_stdout(
-        source_dir,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            &branch_upstream,
-        ],
-    ) {
-        return Ok(upstream);
-    }
-
-    let upstream = format!("origin/{branch}");
-    if git_stdout(source_dir, &["rev-parse", "--verify", &upstream]).is_ok() {
-        return Ok(upstream);
-    }
-
-    Err(format!(
-        "branch `{branch}` has no upstream remote; push the branch or pass --branch main"
-    ))
-}
-
 fn parse_ahead_behind(value: &str) -> Result<(u32, u32), String> {
     let mut parts = value.split_whitespace();
     let ahead = parts
@@ -814,22 +1052,98 @@ fn parse_ahead_behind(value: &str) -> Result<(u32, u32), String> {
     Ok((ahead, behind))
 }
 
-fn print_source_update_status(status: &SourceUpdateStatus) {
-    println!("source_dir: {}", status.source_dir.display());
-    println!("branch: {}", status.branch);
-    println!("upstream: {}", status.upstream);
-    println!("local: {}", short_commit(&status.local_sha));
-    println!("remote: {}", short_commit(&status.upstream_sha));
-    println!("ahead: {}", status.ahead);
-    println!("behind: {}", status.behind);
-    println!("dirty: {}", status.dirty);
+fn update_status_json(status: &UpdateStatus) -> serde_json::Value {
+    match status {
+        UpdateStatus::Releases(status) => serde_json::json!({
+            "mode": UpdateMode::Releases.as_str(),
+            "source_dir": status.source_dir.display().to_string(),
+            "branch": "releases",
+            "upstream": status.latest.as_ref().map(|release| release.tag.as_str()),
+            "local_sha": status.local_sha.as_str(),
+            "upstream_sha": status.latest.as_ref().map(|release| release.sha.as_str()),
+            "ahead": 0,
+            "behind": if status.update_available { 1 } else { 0 },
+            "dirty": status.dirty,
+            "current_tag": status.current.as_ref().map(|release| release.tag.as_str()),
+            "latest_tag": status.latest.as_ref().map(|release| release.tag.as_str()),
+            "update_available": status.update_available,
+        }),
+        UpdateStatus::Canary(status) => serde_json::json!({
+            "mode": UpdateMode::Canary.as_str(),
+            "source_dir": status.source_dir.display().to_string(),
+            "branch": status.branch.as_str(),
+            "upstream": status.upstream.as_str(),
+            "local_sha": status.local_sha.as_str(),
+            "upstream_sha": status.upstream_sha.as_str(),
+            "ahead": status.ahead,
+            "behind": status.behind,
+            "dirty": status.dirty,
+            "current_tag": null,
+            "latest_tag": null,
+            "update_available": status.behind > 0,
+        }),
+    }
+}
 
-    if status.behind > 0 {
-        println!("status: update available");
-    } else if status.ahead > 0 {
-        println!("status: local branch is ahead of upstream");
-    } else {
-        println!("status: up to date");
+fn print_update_status(status: &UpdateStatus) {
+    match status {
+        UpdateStatus::Releases(status) => {
+            println!("mode: releases");
+            println!("source_dir: {}", status.source_dir.display());
+            println!(
+                "current_tag: {}",
+                status
+                    .current
+                    .as_ref()
+                    .map(|release| release.tag.as_str())
+                    .unwrap_or("none")
+            );
+            println!(
+                "latest_tag: {}",
+                status
+                    .latest
+                    .as_ref()
+                    .map(|release| release.tag.as_str())
+                    .unwrap_or("none")
+            );
+            println!("local: {}", short_commit(&status.local_sha));
+            println!(
+                "remote: {}",
+                status
+                    .latest
+                    .as_ref()
+                    .map(|release| short_commit(&release.sha))
+                    .unwrap_or("none")
+            );
+            println!("dirty: {}", status.dirty);
+
+            if status.latest.is_none() {
+                println!("status: no release tags found");
+            } else if status.update_available {
+                println!("status: update available");
+            } else {
+                println!("status: up to date");
+            }
+        }
+        UpdateStatus::Canary(status) => {
+            println!("mode: canary");
+            println!("source_dir: {}", status.source_dir.display());
+            println!("branch: {}", status.branch);
+            println!("upstream: {}", status.upstream);
+            println!("local: {}", short_commit(&status.local_sha));
+            println!("remote: {}", short_commit(&status.upstream_sha));
+            println!("ahead: {}", status.ahead);
+            println!("behind: {}", status.behind);
+            println!("dirty: {}", status.dirty);
+
+            if status.behind > 0 {
+                println!("status: update available");
+            } else if status.ahead > 0 {
+                println!("status: local checkout is ahead of upstream");
+            } else {
+                println!("status: up to date");
+            }
+        }
     }
 }
 
@@ -5491,4 +5805,40 @@ fn write_toggle_state(
 fn process_is_running(pid: u32) -> bool {
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_numeric_release_tags() {
+        assert_eq!(
+            parse_release_version_tag("v1.2.3"),
+            Some(ReleaseVersion {
+                major: 1,
+                minor: 2,
+                patch: 3,
+            })
+        );
+        assert_eq!(
+            parse_release_version_tag("1.10.0"),
+            Some(ReleaseVersion {
+                major: 1,
+                minor: 10,
+                patch: 0,
+            })
+        );
+        assert!(parse_release_version_tag("v1.2").is_none());
+        assert!(parse_release_version_tag("v1.2.3-beta").is_none());
+        assert!(parse_release_version_tag("nightly").is_none());
+    }
+
+    #[test]
+    fn compares_release_tags_numerically() {
+        let older = parse_release_version_tag("v1.9.0").unwrap();
+        let newer = parse_release_version_tag("v1.10.0").unwrap();
+
+        assert!(newer > older);
+    }
 }

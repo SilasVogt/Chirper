@@ -36,6 +36,7 @@ const DAEMON_SERVICE = 'chirper-daemon.service';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
 const CHECK_UPDATES_KEY = 'check-updates';
+const UPDATE_MODE_KEY = 'update-mode';
 const UPDATE_INITIAL_CHECK_SECONDS = 20;
 const UPDATE_CHECK_SECONDS = 6 * 60 * 60;
 
@@ -711,7 +712,12 @@ export default class ChirperExtension extends Extension {
         this._syncUpdateMenu();
 
         try {
-            const output = await this._runCli(['update-check', '--json']);
+            const output = await this._runCli([
+                'update-check',
+                '--json',
+                '--mode',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+            ]);
             const data = JSON.parse(output);
             this._updateStatus = data;
             this._syncUpdateMenu();
@@ -749,7 +755,11 @@ export default class ChirperExtension extends Extension {
         Main.notify('Chirper', 'Updating Chirper. This may take a few minutes.');
 
         try {
-            await this._runCli(['update']);
+            await this._runCli([
+                'update',
+                '--mode',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+            ]);
             this._updateStatus = null;
             this._updateNotifiedForSha = null;
             this._updateRunning = false;
@@ -780,7 +790,10 @@ export default class ChirperExtension extends Extension {
         } else if (this._updateStatus?.error) {
             this._updateStatusItem.label.text = 'Updates: check failed';
         } else if (this._updateStatus?.update_available) {
-            this._updateStatusItem.label.text = `Updates: ${this._updateStatus.behind} commit(s) available`;
+            if (this._updateStatus.mode === 'releases' && this._updateStatus.latest_tag)
+                this._updateStatusItem.label.text = `Updates: ${this._updateStatus.latest_tag} available`;
+            else
+                this._updateStatusItem.label.text = `Updates: ${this._updateStatus.behind} commit(s) available`;
         } else if (this._updateStatus) {
             this._updateStatusItem.label.text = 'Updates: up to date';
         } else {

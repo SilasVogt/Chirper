@@ -205,8 +205,14 @@ Each stage receives the previous stage output, can use placeholders like
 
 ## Updates
 
-For source-based installs, Chirper can check whether the installed checkout is
-behind its upstream branch:
+Chirper currently updates source-based installs. There are two modes:
+
+- `canary`: compares the installed checkout against `origin/main`.
+- `releases`: compares numeric release tags such as `v0.1.0` and installs the
+  highest versioned tag.
+
+The default is `canary`, which keeps early installs on the newest merged `main`
+commit before release tags exist:
 
 ```sh
 chirper update-check
@@ -219,10 +225,20 @@ Apply an update with:
 chirper update
 ```
 
-That reruns the installed checkout's `scripts/install.sh`, pulls the configured
-branch, rebuilds Chirper, reinstalls the user systemd service and GNOME
-extension, and restarts the daemon. It skips whisper.cpp by default so normal
-app updates do not rebuild the inference backend or redownload models. To
+To check and install numbered release tags instead:
+
+```sh
+chirper update-check --mode releases
+chirper update --mode releases
+```
+
+`--channel stable` is accepted as an alias for `--mode releases`, and
+`--channel canary` is accepted as an alias for `--mode canary`.
+
+The updater reruns the installed checkout's `scripts/install.sh`, checks out the
+target branch or tag, rebuilds Chirper, reinstalls the user systemd service and
+GNOME extension, and restarts the daemon. It skips whisper.cpp by default so
+normal app updates do not rebuild the inference backend or redownload models. To
 explicitly include whisper.cpp setup:
 
 ```sh
@@ -235,11 +251,37 @@ configured source checkout before running `chirper update`.
 The GNOME extension periodically runs the same update check when automatic
 update checks are enabled. When an update is available, it shows a Shell
 notification and enables `Update Chirper` in the panel menu. The settings window
-also has `Check` and `Update` buttons.
+also has `Check` and `Update` buttons plus an update mode selector.
 
 On Wayland, updating extension files does not always reload the already-running
 GNOME Shell extension code. If the update changed extension UI or behavior, log
 out and back in after updating.
+
+## Uninstall
+
+Remove the user-local install artifacts:
+
+```sh
+chirper uninstall
+```
+
+That removes `~/.local/bin/chirper*`, the user systemd service, the installed
+GNOME extension files, and Chirper's runtime socket directory. It preserves
+configuration, downloaded Whisper models, whisper.cpp, and source checkouts by
+default.
+
+Use purge flags when you intentionally want to remove local data:
+
+```sh
+chirper uninstall --purge-config
+chirper uninstall --purge-models
+chirper uninstall --purge-whispercpp
+chirper uninstall --purge-source
+chirper uninstall --purge-data
+```
+
+Pass `--reset-gnome-settings` to reset the extension's dconf settings, and
+`--dry-run` to preview the uninstall.
 
 ## Codex CLI Formatting
 

@@ -14,6 +14,9 @@ const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.chirper';
 const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
 const CHECK_UPDATES_KEY = 'check-updates';
+const UPDATE_MODE_KEY = 'update-mode';
+const UPDATE_MODES = ['releases', 'canary'];
+const UPDATE_MODE_LABELS = ['Releases', 'Canary'];
 const COMMON_WHISPER_DOWNLOADS = [
     'medium',
     'large-v3-turbo',
@@ -213,13 +216,29 @@ class ChirperPreferencesBuilder {
 
         const updateCheckRow = new Adw.SwitchRow({
             title: 'Automatic Update Checks',
-            subtitle: 'The GNOME extension checks periodically and notifies when the installed source checkout is behind upstream.',
+            subtitle: 'The GNOME extension checks periodically and notifies when an update is available.',
             active: this._settings.get_boolean(CHECK_UPDATES_KEY),
         });
         updateCheckRow.connect('notify::active', row => {
             this._settings.set_boolean(CHECK_UPDATES_KEY, row.get_active());
         });
         generalGroup.add(updateCheckRow);
+
+        const updateMode = this._settings.get_string(UPDATE_MODE_KEY) || 'canary';
+        const updateModeIndex = Math.max(0, UPDATE_MODES.indexOf(updateMode));
+        const updateModeRow = new Adw.ComboRow({
+            title: 'Update Mode',
+            subtitle: 'Releases follow numbered tags. Canary follows main.',
+            model: Gtk.StringList.new(UPDATE_MODE_LABELS),
+            selected: updateModeIndex,
+        });
+        updateModeRow.connect('notify::selected', row => {
+            this._settings.set_string(
+                UPDATE_MODE_KEY,
+                UPDATE_MODES[row.selected] ?? 'canary'
+            );
+        });
+        generalGroup.add(updateModeRow);
 
         const audioGroup = new Adw.PreferencesGroup({
             title: 'Audio Input',
@@ -321,7 +340,7 @@ class ChirperPreferencesBuilder {
 
         const updateGroup = new Adw.PreferencesGroup({
             title: 'Updates',
-            description: 'Checks the installed Chirper source checkout against its upstream branch.',
+            description: 'Checks the installed Chirper source checkout against release tags or main.',
         });
         page.add(updateGroup);
 
@@ -471,7 +490,12 @@ class ChirperPreferencesBuilder {
         this._updateStatusRow.subtitle = 'Checking';
 
         try {
-            const output = await this._runCli(['update-check', '--json']);
+            const output = await this._runCli([
+                'update-check',
+                '--json',
+                '--mode',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+            ]);
             const data = JSON.parse(output);
             this._lastUpdateStatus = data;
             this._updateStatusRow.subtitle = this._formatUpdateStatus(data);
@@ -493,7 +517,11 @@ class ChirperPreferencesBuilder {
         this._updateStatusRow.subtitle = 'Updating';
 
         try {
-            await this._runCli(['update']);
+            await this._runCli([
+                'update',
+                '--mode',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+            ]);
             this._updateRunning = false;
             this._syncUpdateButtons();
             this._updateStatusRow.subtitle = 'Update finished. Relog if the GNOME extension UI changed.';
@@ -519,6 +547,19 @@ class ChirperPreferencesBuilder {
     }
 
     _formatUpdateStatus(data) {
+        if (data.mode === 'releases') {
+            const current = data.current_tag ?? 'no release';
+            const latest = data.latest_tag ?? 'no release tags';
+
+            if (data.update_available)
+                return `Release update available: ${current} -> ${latest}`;
+
+            if (data.dirty)
+                return `Release ${current} is installed with local changes`;
+
+            return `Release ${current} is up to date`;
+        }
+
         const branch = data.branch ?? 'unknown branch';
         const local = String(data.local_sha ?? '').slice(0, 7);
         const remote = String(data.upstream_sha ?? '').slice(0, 7);
