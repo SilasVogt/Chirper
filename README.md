@@ -13,13 +13,16 @@ This repo is early but usable for local testing on Linux. The current path is:
 - selectable transcription language for whisper.cpp
 - selectable balanced or fast whisper.cpp decoding profiles
 - local rules formatting with preferred spellings
-- optional Ollama AI formatting with hardware presets, model preload, and
+- optional Ollama AI formatting with model selection, model preload, and
   prompt/input/output logs
 - optional Codex CLI proofreading
 - clipboard insertion
 - daemon API for frontends
-- GNOME Shell 50 extension with recording controls, overlay, model selection,
-  audio input selection, and settings
+- GNOME Shell 50 extension with recording controls, overlay, audio input
+  selection, and settings
+- GTK/libadwaita onboarding app for checking dependencies, testing Whisper and
+  formatter models, saving a recommended config, and cleaning up unused setup
+  models
 - GTK/libadwaita model compare app for testing Ollama and Codex formatter
   configurations across prompt variants and transcript cases
 - GTK/libadwaita report viewer for comparing saved benchmark outputs
@@ -99,6 +102,7 @@ crates/chirper-api      shared local API request/response types
 crates/chirper-daemon   background service and local API server
 crates/chirper-cli      command-line control/debug client
 crates/chirper-formatter-*  formatter backends
+apps/onboarding        GTK/libadwaita guided setup utility
 apps/model-compare      GTK/libadwaita model comparison utility
 apps/report-viewer      GTK/libadwaita report comparison utility
 apps/workflow-builder   GTK/libadwaita test workflow builder

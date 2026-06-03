@@ -199,6 +199,13 @@ cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
 mkdir -p "$bin_dir"
 ln -sf "$repo_root/target/$target_dir/chirper" "$bin_dir/chirper"
 ln -sf "$repo_root/target/$target_dir/chirper-daemon" "$bin_dir/chirper-daemon"
+onboarding_linked=false
+if command -v gjs >/dev/null 2>&1; then
+  ln -sf "$repo_root/scripts/run-onboarding.sh" "$bin_dir/chirper-onboarding"
+  onboarding_linked=true
+else
+  echo "Skipping chirper-onboarding link: missing gjs runtime." >&2
+fi
 ln -sf "$repo_root/scripts/run-model-compare.sh" "$bin_dir/chirper-model-compare"
 ln -sf "$repo_root/scripts/run-report-viewer.sh" "$bin_dir/chirper-report-viewer"
 ln -sf "$repo_root/scripts/run-test-workflow-builder.sh" "$bin_dir/chirper-test-workflow-builder"
@@ -206,6 +213,9 @@ ln -sf "$repo_root/scripts/run-test-workflow-builder.sh" "$bin_dir/chirper-test-
 echo "Linked binaries:"
 echo "  $bin_dir/chirper"
 echo "  $bin_dir/chirper-daemon"
+if [ "$onboarding_linked" = true ]; then
+  echo "  $bin_dir/chirper-onboarding"
+fi
 echo "  $bin_dir/chirper-model-compare"
 echo "  $bin_dir/chirper-report-viewer"
 echo "  $bin_dir/chirper-test-workflow-builder"

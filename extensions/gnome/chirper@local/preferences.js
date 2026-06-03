@@ -15,13 +15,11 @@ const TOGGLE_RECORDING_KEY = 'toggle-recording';
 const PASTE_AFTER_STOP_KEY = 'paste-after-stop';
 const CHECK_UPDATES_KEY = 'check-updates';
 const COMMON_WHISPER_DOWNLOADS = [
-    'base',
-    'small.en',
-    'small',
     'medium',
     'large-v3-turbo',
-    'large-v3-turbo-q5_0',
+    'large-v3',
 ];
+const RECOMMENDED_WHISPER_MODEL = 'large-v3-turbo';
 const AI_LOG_RETENTION_OPTIONS = [
     ['0', 'Off', 'Do not keep prompt logs.'],
     ['1', '1 Day', 'Delete prompt logs older than one day.'],
@@ -77,6 +75,18 @@ function runDetached(argv) {
     );
 }
 
+function isAiFormatterBackend(backend) {
+    return backend === 'ollama' || backend === 'codex' || backend === 'llama.cpp';
+}
+
+function formatAiFormatterBackend(backend) {
+    if (backend === 'codex')
+        return 'Codex';
+    if (backend === 'llama.cpp')
+        return 'llama.cpp';
+    return 'Ollama';
+}
+
 function formatAccelerator(value) {
     if (!value)
         return 'Unset';
@@ -123,6 +133,19 @@ function modelSubtitle(model, selected = false) {
     return parts.join(' - ');
 }
 
+function isVisibleWhisperModel(name) {
+    return name === 'medium'
+        || name.startsWith('medium-')
+        || name === 'medium.en'
+        || name.startsWith('medium.en-')
+        || name === 'large-v3'
+        || name.startsWith('large-v3-');
+}
+
+function whisperLabel(name) {
+    return name === RECOMMENDED_WHISPER_MODEL ? `${name} (Recommended)` : name;
+}
+
 function addButton(row, label, callback, options = {}) {
     const button = new Gtk.Button({
         label,
@@ -146,14 +169,16 @@ class ChirperPreferencesBuilder {
         this._settings = settings;
         this._runtime = loadJsonFile(GLib.build_filenamev([extensionPath, 'runtime.json']));
         this._audioRows = [];
-        this._languageRows = [];
+        this._languageOptions = [];
+        this._refreshingLanguages = false;
         this._transcriptionRows = [];
         this._installedRows = [];
         this._downloadRows = [];
-        this._aiTierRows = [];
         this._aiLogRows = [];
         this._ollamaRows = [];
         this._refreshingAiFormatting = false;
+        this._currentAiFormatterBackend = 'rules';
+        this._lastEnabledAiFormatterBackend = 'ollama';
         this._updateChecking = false;
         this._updateRunning = false;
     }
@@ -226,23 +251,20 @@ class ChirperPreferencesBuilder {
         });
         page.add(languageGroup);
 
-        this._currentLanguageRow = new Adw.ActionRow({
-            title: 'Current Language',
+        this._languageRow = new Adw.ComboRow({
+            title: 'Language',
             subtitle: 'Loading',
+            model: Gtk.StringList.new([]),
         });
-        languageGroup.add(this._currentLanguageRow);
+        this._languageRow.connect('notify::selected', row => {
+            if (this._refreshingLanguages)
+                return;
 
-        const refreshLanguageRow = new Adw.ActionRow({
-            title: 'Refresh Languages',
-            subtitle: 'Reload common whisper.cpp language options.',
+            const language = this._languageOptions[row.selected];
+            if (language)
+                this._selectLanguage(language.code);
         });
-        addButton(refreshLanguageRow, 'Refresh', () => this._refreshLanguages());
-        languageGroup.add(refreshLanguageRow);
-
-        this._languagesGroup = new Adw.PreferencesGroup({
-            title: 'Languages',
-        });
-        page.add(this._languagesGroup);
+        languageGroup.add(this._languageRow);
 
         const transcriptionGroup = new Adw.PreferencesGroup({
             title: 'Transcription Speed',
@@ -349,14 +371,14 @@ class ChirperPreferencesBuilder {
         page.add(this._downloadGroup);
 
         const aiGroup = new Adw.PreferencesGroup({
-            title: 'AI Formatting',
-            description: 'Use Ollama after transcription to produce the final text that is copied or pasted.',
+            title: 'AI Formatting and Corrections',
+            description: 'Clean up dictated text after local transcription.',
         });
         page.add(aiGroup);
 
         this._aiFormattingSwitch = new Adw.SwitchRow({
-            title: 'AI Formatting',
-            subtitle: 'When off, Chirper uses local rules only.',
+            title: 'Enable AI Formatting',
+            subtitle: 'Use a local Ollama model or Codex after transcription.',
         });
         this._aiFormattingSwitch.connect('notify::active', row => {
             if (!this._refreshingAiFormatting)
@@ -365,14 +387,34 @@ class ChirperPreferencesBuilder {
         aiGroup.add(this._aiFormattingSwitch);
 
         this._aiStatusRow = new Adw.ActionRow({
-            title: 'Selected AI Model',
+            title: 'Selected Formatting',
             subtitle: 'Loading',
         });
         aiGroup.add(this._aiStatusRow);
 
+        this._codexProviderRow = new Adw.ActionRow({
+            title: 'Use Codex',
+            subtitle: 'Use Codex CLI for proofreading after local rules run.',
+        });
+        this._codexProviderButton = addButton(
+            this._codexProviderRow,
+            'Use',
+            () => this._selectFormatter('codex')
+        );
+        aiGroup.add(this._codexProviderRow);
+
+        const openRouterRow = new Adw.ActionRow({
+            title: 'Use OpenRouter Free Models',
+            subtitle: 'Not implemented yet.',
+        });
+        addButton(openRouterRow, 'Use', () => {}, {
+            sensitive: false,
+        });
+        aiGroup.add(openRouterRow);
+
         this._aiPreloadSwitch = new Adw.SwitchRow({
             title: 'Preload While Recording',
-            subtitle: 'Loads the selected Ollama model when recording starts, then unloads after formatting.',
+            subtitle: 'Loads the selected local Ollama model when recording starts, then unloads after formatting.',
         });
         this._aiPreloadSwitch.connect('notify::active', row => {
             if (!this._refreshingAiFormatting)
@@ -394,60 +436,21 @@ class ChirperPreferencesBuilder {
         addButton(refreshAiRow, 'Refresh', () => this._refreshAiFormatting());
         aiGroup.add(refreshAiRow);
 
-        this._aiTierGroup = new Adw.PreferencesGroup({
-            title: 'AI Hardware Presets',
-            description: 'Presets choose the Ollama model Chirper uses for AI formatting.',
-        });
-        page.add(this._aiTierGroup);
-
         this._aiLogGroup = new Adw.PreferencesGroup({
             title: 'AI Prompt Log Retention',
         });
         page.add(this._aiLogGroup);
 
-        const ollamaGroup = new Adw.PreferencesGroup({
-            title: 'Ollama',
-            description: 'Use an installed Ollama model to polish dictated text after local rules run.',
+        this._ollamaModelsGroup = new Adw.PreferencesGroup({
+            title: 'Installed Ollama Models',
         });
-        page.add(ollamaGroup);
-        this._ollamaStatusRow = new Adw.ActionRow({
-            title: 'Formatter',
-            subtitle: 'Loading',
-        });
-        ollamaGroup.add(this._ollamaStatusRow);
-
-        const rulesRow = new Adw.ActionRow({
-            title: 'Rules Only',
-            subtitle: 'Fast local punctuation and symbol replacement.',
-        });
-        addButton(rulesRow, 'Use', () => this._selectFormatter('rules'));
-        ollamaGroup.add(rulesRow);
-
-        const noneRow = new Adw.ActionRow({
-            title: 'No Formatter',
-            subtitle: 'Copy Whisper output without cleanup.',
-        });
-        addButton(noneRow, 'Use', () => this._selectFormatter('none'));
-        ollamaGroup.add(noneRow);
-
-        const codexRow = new Adw.ActionRow({
-            title: 'Codex CLI',
-            subtitle: 'Use `codex exec` for proofreading after local rules run.',
-        });
-        addButton(codexRow, 'Use', () => this._selectFormatter('codex'));
-        ollamaGroup.add(codexRow);
-
+        page.add(this._ollamaModelsGroup);
         const refreshOllamaRow = new Adw.ActionRow({
             title: 'Refresh Ollama Models',
             subtitle: 'Reload installed models from `ollama list`.',
         });
         addButton(refreshOllamaRow, 'Refresh', () => this._refreshOllama());
-        ollamaGroup.add(refreshOllamaRow);
-
-        this._ollamaModelsGroup = new Adw.PreferencesGroup({
-            title: 'Installed Ollama Models',
-        });
-        page.add(this._ollamaModelsGroup);
+        this._ollamaModelsGroup.add(refreshOllamaRow);
 
         this._refreshAudioInputs();
         this._refreshLanguages();
@@ -586,47 +589,43 @@ class ChirperPreferencesBuilder {
     }
 
     async _refreshLanguages() {
-        this._currentLanguageRow.subtitle = 'Loading';
-        this._clearRows(this._languagesGroup, this._languageRows);
+        this._languageRow.subtitle = 'Loading';
+        this._languageRow.set_sensitive(false);
+        this._refreshingLanguages = true;
 
         try {
             const output = await this._runCli(['language-list', '--json']);
             const data = JSON.parse(output);
-            const current = data.current ?? {};
             const languages = data.languages ?? [];
+            const labels = languages.map(language => language.label ?? language.code);
+            const selectedIndex = Math.max(0, languages.findIndex(language => language.selected));
 
-            this._currentLanguageRow.subtitle = current.label ?? current.code ?? 'Auto detect';
-
-            for (const language of languages) {
-                const selected = Boolean(language.selected);
-                const row = new Adw.ActionRow({
-                    title: language.label ?? language.code,
-                    subtitle: language.code,
-                });
-                addButton(row, selected ? 'Selected' : 'Use', () => this._selectLanguage(language.code), {
-                    sensitive: !selected,
-                    suggested: language.code === 'id',
-                });
-                this._languagesGroup.add(row);
-                this._languageRows.push(row);
-            }
+            this._languageOptions = languages;
+            this._languageRow.model = Gtk.StringList.new(labels);
+            this._languageRow.selected = selectedIndex;
+            this._languageRow.subtitle = 'Auto detect is usually best unless Whisper picks the wrong language.';
+            this._languageRow.set_sensitive(languages.length > 0);
 
             if (languages.length === 0)
-                this._addInfoRow(this._languagesGroup, this._languageRows, 'No language options available');
+                this._languageRow.subtitle = 'No language options available';
         } catch (error) {
-            this._currentLanguageRow.subtitle = 'Language controls unavailable';
-            this._addInfoRow(this._languagesGroup, this._languageRows, error.message);
+            this._languageOptions = [];
+            this._languageRow.model = Gtk.StringList.new([]);
+            this._languageRow.subtitle = error.message;
+            this._languageRow.set_sensitive(false);
+        } finally {
+            this._refreshingLanguages = false;
         }
     }
 
     async _selectLanguage(language) {
-        this._currentLanguageRow.subtitle = `Selecting ${language}`;
+        this._languageRow.subtitle = `Selecting ${language}`;
 
         try {
             await this._runCli(['language-use', language]);
             await this._refreshLanguages();
         } catch (error) {
-            this._currentLanguageRow.subtitle = error.message;
+            this._languageRow.subtitle = error.message;
         }
     }
 
@@ -688,19 +687,19 @@ class ChirperPreferencesBuilder {
             const output = await this._runCli(['model-list', '--json']);
             const data = JSON.parse(output);
             const current = data.current?.name ?? 'unset';
-            const installed = data.installed ?? [];
+            const installed = (data.installed ?? []).filter(model => isVisibleWhisperModel(model.name));
             const available = data.available ?? [];
             const installedNames = new Set(installed.map(model => model.name));
 
             this._currentModelRow.subtitle = data.current?.path ?? current;
 
             if (installed.length === 0) {
-                this._addInfoRow(this._installedGroup, this._installedRows, 'No local models found');
+                this._addInfoRow(this._installedGroup, this._installedRows, 'No medium or large-v3 family models found');
             } else {
                 for (const model of installed) {
                     const selected = model.name === current;
                     const row = new Adw.ActionRow({
-                        title: model.name,
+                        title: whisperLabel(model.name),
                         subtitle: modelSubtitle(model, selected),
                     });
                     addButton(row, selected ? 'Selected' : 'Use', () => this._selectModel(model.name), {
@@ -717,11 +716,11 @@ class ChirperPreferencesBuilder {
                     continue;
 
                 const row = new Adw.ActionRow({
-                    title: name,
+                    title: whisperLabel(name),
                     subtitle: 'Download and select this model',
                 });
                 addButton(row, 'Download', () => this._downloadModel(name), {
-                    suggested: name === 'small.en',
+                    suggested: name === RECOMMENDED_WHISPER_MODEL,
                 });
                 this._downloadGroup.add(row);
                 this._downloadRows.push(row);
@@ -729,7 +728,7 @@ class ChirperPreferencesBuilder {
             }
 
             if (downloadCount === 0)
-                this._addInfoRow(this._downloadGroup, this._downloadRows, 'Common models are already installed');
+                this._addInfoRow(this._downloadGroup, this._downloadRows, 'Recommended models are already installed');
         } catch (error) {
             this._currentModelRow.subtitle = 'Model controls unavailable';
             this._addInfoRow(this._installedGroup, this._installedRows, error.message);
@@ -762,40 +761,41 @@ class ChirperPreferencesBuilder {
     async _refreshAiFormatting() {
         this._aiStatusRow.subtitle = 'Loading';
         this._aiPromptLogRow.subtitle = 'Loading';
-        this._clearRows(this._aiTierGroup, this._aiTierRows);
         this._clearRows(this._aiLogGroup, this._aiLogRows);
 
         try {
             const output = await this._runCli(['ai-format-current', '--json']);
             const data = JSON.parse(output);
-            const enabled = Boolean(data.enabled);
-            const currentTier = data.hardware_tier ?? 'high';
-            const tiers = data.tiers ?? [];
-            this._aiCurrentTier = currentTier;
+            const backend = data.backend ?? 'rules';
+            const enabled = isAiFormatterBackend(backend);
+            this._currentAiFormatterBackend = backend;
+            if (enabled)
+                this._lastEnabledAiFormatterBackend = backend;
+            else if (isAiFormatterBackend(data.last_enabled_backend))
+                this._lastEnabledAiFormatterBackend = data.last_enabled_backend;
 
             this._refreshingAiFormatting = true;
             this._aiFormattingSwitch.active = enabled;
             this._aiPreloadSwitch.active = Boolean(data.preload_on_recording);
             this._refreshingAiFormatting = false;
 
-            this._aiStatusRow.subtitle = enabled
-                ? `${data.hardware_tier_label ?? currentTier}: ${data.model}`
-                : `Off, using ${data.backend ?? 'rules'}`;
+            if (backend === 'ollama') {
+                this._aiStatusRow.subtitle = `Ollama: ${data.model}`;
+            } else if (backend === 'codex') {
+                this._aiStatusRow.subtitle = 'Codex CLI';
+            } else if (backend === 'llama.cpp') {
+                this._aiStatusRow.subtitle = 'llama.cpp';
+            } else {
+                this._aiStatusRow.subtitle = 'Off';
+            }
+
             this._aiPromptLogRow.subtitle = `${data.prompt_log_dir ?? 'Prompt log folder'} - keep ${this._formatLogDays(data.log_retention_days)}`;
             this._aiPromptLogPath = data.prompt_log_dir;
 
-            for (const tier of tiers) {
-                const selected = tier.name === currentTier && enabled;
-                const row = new Adw.ActionRow({
-                    title: tier.label ?? tier.name,
-                    subtitle: `${tier.description ?? ''} - ${tier.model ?? ''}`,
-                });
-                addButton(row, selected ? 'Selected' : 'Use', () => this._selectAiTier(tier.name), {
-                    sensitive: !selected,
-                    suggested: tier.name === 'high',
-                });
-                this._aiTierGroup.add(row);
-                this._aiTierRows.push(row);
+            if (this._codexProviderButton) {
+                const selected = backend === 'codex';
+                this._codexProviderButton.label = selected ? 'Selected' : 'Use';
+                this._codexProviderButton.sensitive = !selected;
             }
 
             for (const [days, title, subtitle] of AI_LOG_RETENTION_OPTIONS) {
@@ -811,33 +811,30 @@ class ChirperPreferencesBuilder {
             this._refreshingAiFormatting = false;
             this._aiStatusRow.subtitle = 'AI formatting controls unavailable';
             this._aiPromptLogRow.subtitle = error.message;
-            this._addInfoRow(this._aiTierGroup, this._aiTierRows, error.message);
+            if (this._codexProviderButton)
+                this._codexProviderButton.sensitive = false;
             this._addInfoRow(this._aiLogGroup, this._aiLogRows, 'Check that Chirper has been built.');
         }
     }
 
     async _setAiFormattingEnabled(enabled) {
-        this._aiStatusRow.subtitle = enabled ? 'Enabling AI formatting' : 'Disabling AI formatting';
+        const currentBackendIsAi = isAiFormatterBackend(this._currentAiFormatterBackend);
+        if (!enabled && currentBackendIsAi)
+            this._lastEnabledAiFormatterBackend = this._currentAiFormatterBackend;
+
+        const backend = isAiFormatterBackend(this._lastEnabledAiFormatterBackend)
+            ? this._lastEnabledAiFormatterBackend
+            : 'ollama';
+        const label = formatAiFormatterBackend(backend);
+        this._aiStatusRow.subtitle = enabled ? `Enabling ${label} formatting` : 'Disabling AI formatting';
 
         try {
-            await this._runCli(['ai-format-use', enabled ? (this._aiCurrentTier ?? 'high') : 'off']);
+            await this._runCli(enabled ? ['formatter-use', backend] : ['formatter-use', 'rules']);
             await this._refreshAiFormatting();
             await this._refreshOllama();
         } catch (error) {
             this._aiStatusRow.subtitle = error.message;
             await this._refreshAiFormatting();
-        }
-    }
-
-    async _selectAiTier(tier) {
-        this._aiStatusRow.subtitle = `Selecting ${tier}`;
-
-        try {
-            await this._runCli(['ai-format-use', tier]);
-            await this._refreshAiFormatting();
-            await this._refreshOllama();
-        } catch (error) {
-            this._aiStatusRow.subtitle = error.message;
         }
     }
 
@@ -883,19 +880,13 @@ class ChirperPreferencesBuilder {
     }
 
     async _refreshOllama() {
-        this._ollamaStatusRow.subtitle = 'Loading';
         this._clearRows(this._ollamaModelsGroup, this._ollamaRows);
 
         try {
             const output = await this._runCli(['ollama-list', '--json']);
             const data = JSON.parse(output);
             const formatter = data.formatter ?? 'rules';
-            const current = data.current?.model ?? 'unset';
             const models = data.models ?? [];
-
-            this._ollamaStatusRow.subtitle = formatter === 'ollama'
-                ? `Ollama: ${current}`
-                : formatter;
 
             if (!data.available) {
                 this._addInfoRow(
@@ -915,7 +906,7 @@ class ChirperPreferencesBuilder {
                 const selected = formatter === 'ollama' && model.selected;
                 const row = new Adw.ActionRow({
                     title: model.name,
-                    subtitle: selected ? 'Selected for LLM formatting' : 'Installed',
+                    subtitle: selected ? 'Selected for AI formatting' : 'Installed',
                 });
                 addButton(row, selected ? 'Selected' : 'Use', () => this._selectOllamaModel(model.name), {
                     sensitive: !selected,
@@ -925,30 +916,31 @@ class ChirperPreferencesBuilder {
                 this._ollamaRows.push(row);
             }
         } catch (error) {
-            this._ollamaStatusRow.subtitle = 'Formatter controls unavailable';
             this._addInfoRow(this._ollamaModelsGroup, this._ollamaRows, error.message);
         }
     }
 
     async _selectFormatter(formatter) {
-        this._ollamaStatusRow.subtitle = `Selecting ${formatter}`;
+        this._aiStatusRow.subtitle = `Selecting ${formatter}`;
 
         try {
             await this._runCli(['formatter-use', formatter]);
+            await this._refreshAiFormatting();
             await this._refreshOllama();
         } catch (error) {
-            this._ollamaStatusRow.subtitle = error.message;
+            this._aiStatusRow.subtitle = error.message;
         }
     }
 
     async _selectOllamaModel(model) {
-        this._ollamaStatusRow.subtitle = `Selecting ${model}`;
+        this._aiStatusRow.subtitle = `Selecting ${model}`;
 
         try {
             await this._runCli(['ollama-use', model]);
+            await this._refreshAiFormatting();
             await this._refreshOllama();
         } catch (error) {
-            this._ollamaStatusRow.subtitle = error.message;
+            this._aiStatusRow.subtitle = error.message;
         }
     }
 

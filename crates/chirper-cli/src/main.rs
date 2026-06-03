@@ -18,9 +18,9 @@ use chirper_api::{send_request, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AiHardwareTier, AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig,
-    DictationMode, FormatterBackend, ServiceCommand, TextInserter, TranscriptionProfile,
-    WorkflowState, WHISPER_MODEL_NAMES,
+    AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
+    FormatterBackend, ServiceCommand, TextInserter, TranscriptionProfile, WorkflowState,
+    WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -54,6 +54,8 @@ const WHISPER_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("hi", "Hindi"),
     ("ar", "Arabic"),
 ];
+const ONBOARDING_WHISPER_MODELS: &[&str] = &["medium", "large-v3-turbo", "large-v3"];
+const ONBOARDING_OLLAMA_MODELS: &[&str] = &["granite4.1:3b", "granite4.1:8b", "olmo2:7b"];
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -74,6 +76,16 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("record-start")) {
+        record_start(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("record-stop")) {
+        record_stop(args.collect());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("transcribe-file")) {
         transcribe_file(args.collect());
         return;
@@ -91,6 +103,11 @@ fn main() {
 
     if matches!(first.as_deref(), Some("update")) {
         update(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("onboarding-check")) {
+        onboarding_check(args.collect());
         return;
     }
 
@@ -902,20 +919,127 @@ fn record_test(seconds: Option<&str>) {
     println!("channels: {}", audio.channels);
 }
 
+fn record_start(args: Vec<String>) {
+    let (json, state_path) = parse_record_state_args(args, "record-start");
+
+    if read_toggle_state(&state_path).is_some() {
+        eprintln!("recording is already active for {}", state_path.display());
+        std::process::exit(1);
+    }
+
+    let config = load_config_or_exit();
+    let recording =
+        match PipeWireRecorder::start_detached(PipeWireRecorderOptions::from_config(&config)) {
+            Ok(recording) => recording,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+
+    if let Err(error) = write_toggle_state(&state_path, &recording) {
+        let _ = PipeWireRecorder::stop_detached(&recording);
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    if json {
+        print_recording_json(&recording, &state_path);
+    } else {
+        println!("started recording: {}", recording.audio.path.display());
+        println!("pid: {}", recording.pid);
+        println!("state_path: {}", state_path.display());
+    }
+}
+
+fn record_stop(args: Vec<String>) {
+    let (json, state_path) = parse_record_state_args(args, "record-stop");
+    let Some(recording) = read_toggle_state(&state_path) else {
+        eprintln!("no active recording found at {}", state_path.display());
+        std::process::exit(1);
+    };
+
+    let audio = match PipeWireRecorder::stop_detached(&recording) {
+        Ok(audio) => audio,
+        Err(error) => {
+            let _ = fs::remove_file(&state_path);
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let _ = fs::remove_file(&state_path);
+
+    if json {
+        let value = serde_json::json!({
+            "path": audio.path,
+            "sample_rate_hz": audio.sample_rate_hz,
+            "channels": audio.channels,
+            "state_path": state_path,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+    } else {
+        println!("stopped recording: {}", audio.path.display());
+        println!("sample_rate_hz: {}", audio.sample_rate_hz);
+        println!("channels: {}", audio.channels);
+        println!("state_path: {}", state_path.display());
+    }
+}
+
+fn parse_record_state_args(args: Vec<String>, command: &str) -> (bool, PathBuf) {
+    let mut json = false;
+    let mut state_path = manual_record_state_path();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--state=") {
+            state_path = expand_user_path(value);
+            index += 1;
+        } else if arg == "--state" {
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("usage: chirper {command} [--json] [--state PATH]");
+                std::process::exit(1);
+            };
+            state_path = expand_user_path(value);
+            index += 2;
+        } else {
+            eprintln!("usage: chirper {command} [--json] [--state PATH]");
+            std::process::exit(1);
+        }
+    }
+
+    (json, state_path)
+}
+
+fn print_recording_json(recording: &DetachedRecording, state_path: &Path) {
+    let value = serde_json::json!({
+        "pid": recording.pid,
+        "path": recording.audio.path,
+        "sample_rate_hz": recording.audio.sample_rate_hz,
+        "channels": recording.audio.channels,
+        "state_path": state_path,
+    });
+    println!("{}", serde_json::to_string_pretty(&value).unwrap());
+}
+
 fn transcribe_file(args: Vec<String>) {
-    let (audio_path, model_path, profile) = match parse_transcribe_file_args(args) {
+    let (json, audio_path, model_path, profile) = match parse_transcribe_file_args(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("{error}");
             eprintln!(
-                "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+                "usage: chirper transcribe-file [--json] [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
             );
             std::process::exit(1);
         }
     };
     let Some(audio_path) = audio_path else {
         eprintln!(
-            "usage: chirper transcribe-file [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
+            "usage: chirper transcribe-file [--json] [--profile balanced|fast] [--fast] <audio.wav> [model.bin]"
         );
         std::process::exit(1);
     };
@@ -951,7 +1075,13 @@ fn transcribe_file(args: Vec<String>) {
         channels: 1,
     };
 
-    let transcript = match asr.transcribe(&audio) {
+    let ((transcript, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+        let started = Instant::now();
+        let transcript = asr.transcribe(&audio);
+        let elapsed_ms = started.elapsed().as_millis();
+        (transcript, elapsed_ms)
+    });
+    let transcript = match transcript {
         Ok(transcript) => transcript,
         Err(error) => {
             eprintln!("{error}");
@@ -959,12 +1089,32 @@ fn transcribe_file(args: Vec<String>) {
         }
     };
 
+    if json {
+        let value = serde_json::json!({
+            "text": transcript.text,
+            "language": transcript.language,
+            "elapsed_ms": elapsed_ms,
+            "metrics": metrics_json(&metrics),
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
     println!("{}", transcript.text);
 }
 
 fn parse_transcribe_file_args(
     args: Vec<String>,
-) -> Result<(Option<String>, Option<String>, Option<TranscriptionProfile>), String> {
+) -> Result<
+    (
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<TranscriptionProfile>,
+    ),
+    String,
+> {
+    let mut json = false;
     let mut profile = None;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -972,7 +1122,10 @@ fn parse_transcribe_file_args(
     while index < args.len() {
         let arg = &args[index];
 
-        if arg == "--fast" {
+        if arg == "--json" {
+            json = true;
+            index += 1;
+        } else if arg == "--fast" {
             profile = Some(TranscriptionProfile::Fast);
             index += 1;
         } else if arg == "--balanced" {
@@ -1005,6 +1158,7 @@ fn parse_transcribe_file_args(
     }
 
     Ok((
+        json,
         positional.first().cloned(),
         positional.get(1).cloned(),
         profile,
@@ -1063,6 +1217,113 @@ fn diagnose() {
     println!("runtime:");
     print_path_status(&runtime.whispercpp_command);
     print_path_status(&runtime.whispercpp_model_path);
+}
+
+fn onboarding_check(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let installed_whisper_models = installed_models();
+    let ollama_result = list_ollama_models(&config.ollama_command);
+    let (ollama_available, ollama_error, ollama_models) = match ollama_result {
+        Ok(models) => (true, None, models),
+        Err(error) => (false, Some(error.to_string()), Vec::new()),
+    };
+    let ollama_model_names = ollama_models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect::<Vec<_>>();
+
+    let value = serde_json::json!({
+        "commands": {
+            "pw_record": {
+                "command": "pw-record",
+                "available": command_available("pw-record"),
+            },
+            "whisper": {
+                "command": config.whispercpp_command,
+                "available": command_available(&config.whispercpp_command),
+            },
+            "ollama": {
+                "command": config.ollama_command,
+                "available": ollama_available,
+                "error": ollama_error,
+            },
+            "codex": {
+                "command": config.codex_command,
+                "available": command_available(&config.codex_command),
+            },
+        },
+        "whisper_models": ONBOARDING_WHISPER_MODELS
+            .iter()
+            .map(|name| {
+                let installed = installed_whisper_models.get(*name);
+                serde_json::json!({
+                    "name": name,
+                    "installed": installed.is_some(),
+                    "path": installed
+                        .map(|model| model.path.clone())
+                        .unwrap_or_else(|| ChirperConfig::default_model_path(name)),
+                    "bytes": installed.map(|model| model.bytes),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "ollama_models": ONBOARDING_OLLAMA_MODELS
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "installed": ollama_model_names.iter().any(|model| *model == *name),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "current": {
+            "whisper_model": config.whisper_model,
+            "whisper_model_path": config.whispercpp_model_path,
+            "formatter_backend": config.formatter_backend.as_config_value(),
+            "ollama_model": config.ollama_model,
+            "codex_model": config.codex_model,
+            "codex_reasoning_effort": config.codex_reasoning_effort,
+        },
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!("onboarding checks:");
+    for (key, command) in value["commands"].as_object().unwrap() {
+        let available = command["available"].as_bool().unwrap_or(false);
+        let command_name = command["command"].as_str().unwrap_or(key);
+        println!(
+            "  {key}: {} ({command_name})",
+            if available { "ok" } else { "missing" }
+        );
+    }
+    println!("whisper models:");
+    for model in value["whisper_models"].as_array().unwrap() {
+        println!(
+            "  {}: {}",
+            model["name"].as_str().unwrap_or("unknown"),
+            if model["installed"].as_bool().unwrap_or(false) {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+    }
+    println!("ollama models:");
+    for model in value["ollama_models"].as_array().unwrap() {
+        println!(
+            "  {}: {}",
+            model["name"].as_str().unwrap_or("unknown"),
+            if model["installed"].as_bool().unwrap_or(false) {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+    }
 }
 
 fn print_path_status(status: &chirper_platform::PathStatus) {
@@ -1624,7 +1885,6 @@ fn formatter_current(args: Vec<String>) {
             "backend": config.formatter_backend.as_config_value(),
             "ollama_model": config.ollama_model,
             "ollama_command": config.ollama_command,
-            "ai_hardware_tier": config.ai_hardware_tier.as_config_value(),
             "format_log_retention_days": config.format_log_retention_days,
             "ollama_preload_on_recording": config.ollama_preload_on_recording,
             "codex_command": config.codex_command,
@@ -1642,10 +1902,6 @@ fn formatter_current(args: Vec<String>) {
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
-    println!(
-        "ai_hardware_tier: {}",
-        config.ai_hardware_tier.as_config_value()
-    );
     println!(
         "format_log_retention_days: {}",
         config.format_log_retention_days
@@ -1679,7 +1935,7 @@ fn formatter_current(args: Vec<String>) {
 
 fn formatter_use(args: Vec<String>) {
     let Some(selection) = args.first() else {
-        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex> [model]");
+        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex|llama.cpp> [model]");
         std::process::exit(1);
     };
 
@@ -1737,33 +1993,20 @@ fn formatter_use(args: Vec<String>) {
 fn ai_format_current(args: Vec<String>) {
     let json = args.iter().any(|arg| arg == "--json");
     let config = load_config_or_exit();
-    let enabled = config.formatter_backend == FormatterBackend::Ollama;
-    let tiers = AiHardwareTier::all()
-        .iter()
-        .map(|tier| {
-            serde_json::json!({
-                "name": tier.as_config_value(),
-                "label": tier.label(),
-                "description": tier.description(),
-                "model": tier.ollama_model(),
-                "selected": *tier == config.ai_hardware_tier,
-            })
-        })
-        .collect::<Vec<_>>();
+    let enabled = config.formatter_backend.is_ai();
 
     if json {
         let value = serde_json::json!({
             "enabled": enabled,
             "backend": config.formatter_backend.as_config_value(),
-            "hardware_tier": config.ai_hardware_tier.as_config_value(),
-            "hardware_tier_label": config.ai_hardware_tier.label(),
-            "hardware_tier_description": config.ai_hardware_tier.description(),
+            "last_enabled_backend": config
+                .last_ai_formatter_backend
+                .map(FormatterBackend::as_config_value),
             "model": config.ollama_model,
             "ollama_command": config.ollama_command,
             "preload_on_recording": config.ollama_preload_on_recording,
             "log_retention_days": config.format_log_retention_days,
             "prompt_log_dir": ChirperConfig::default_prompt_log_dir().display().to_string(),
-            "tiers": tiers,
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
         return;
@@ -1772,9 +2015,11 @@ fn ai_format_current(args: Vec<String>) {
     println!("enabled: {enabled}");
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!(
-        "hardware_tier: {} ({})",
-        config.ai_hardware_tier.as_config_value(),
-        config.ai_hardware_tier.description()
+        "last_enabled_backend: {}",
+        config
+            .last_ai_formatter_backend
+            .map(FormatterBackend::as_config_value)
+            .unwrap_or("<none>")
     );
     println!("ollama_model: {}", config.ollama_model);
     println!(
@@ -1790,12 +2035,13 @@ fn ai_format_current(args: Vec<String>) {
 
 fn ai_format_use(args: Vec<String>) {
     let Some(selection) = args.first() else {
-        eprintln!("usage: chirper ai-format-use <off|low|medium|high>");
+        eprintln!("usage: chirper ai-format-use <off|on>");
         std::process::exit(1);
     };
 
     if matches!(selection.as_str(), "off" | "none" | "disable" | "disabled") {
-        if let Err(error) = ChirperConfig::save_default_ai_formatting(Some(false), None, None, None)
+        if let Err(error) =
+            ChirperConfig::save_default_formatter_selection(FormatterBackend::Rules, None)
         {
             eprintln!("{error}");
             std::process::exit(1);
@@ -1805,31 +2051,29 @@ fn ai_format_use(args: Vec<String>) {
         return;
     }
 
-    let tier = match selection.parse::<AiHardwareTier>() {
-        Ok(tier) => tier,
-        Err(error) => {
-            eprintln!("{error}");
-            eprintln!("usage: chirper ai-format-use <off|low|medium|high>");
-            std::process::exit(1);
-        }
-    };
+    if !matches!(selection.as_str(), "on" | "enable" | "enabled" | "ollama") {
+        eprintln!("usage: chirper ai-format-use <off|on>");
+        std::process::exit(1);
+    }
+
     let config = load_config_or_exit();
 
-    if let Err(error) = ensure_ollama_model_available(&config.ollama_command, tier.ollama_model()) {
+    if let Err(error) = ensure_ollama_model_available(&config.ollama_command, &config.ollama_model)
+    {
         eprintln!("{error}");
         std::process::exit(1);
     }
 
     if let Err(error) =
-        ChirperConfig::save_default_ai_formatting(Some(true), Some(tier), None, None)
+        ChirperConfig::save_default_formatter_selection(FormatterBackend::Ollama, None)
     {
         eprintln!("{error}");
         std::process::exit(1);
     }
 
     println!("AI formatting enabled");
-    println!("hardware_tier: {}", tier.as_config_value());
-    println!("ollama_model: {}", tier.ollama_model());
+    println!("formatter: ollama");
+    println!("ollama_model: {}", config.ollama_model);
 }
 
 fn ai_format_logs(args: Vec<String>) {
@@ -2495,6 +2739,16 @@ fn normalize_optional_cli_value(value: &str) -> Option<String> {
     }
 }
 
+fn required_cli_value(args: &[String], index: usize, flag: &str) -> String {
+    let value = args.get(index + 1).map(|value| value.trim());
+    let Some(value) = value.filter(|value| !value.is_empty() && !value.starts_with('-')) else {
+        eprintln!("{flag} requires a value");
+        std::process::exit(1);
+    };
+
+    value.to_string()
+}
+
 fn push_config_override(config_overrides: &mut Vec<String>, value: &str) {
     let value = value.trim();
     if !value.is_empty() {
@@ -2914,6 +3168,10 @@ struct FormatCompareArgs {
     include_codex_current: bool,
     codex_profiles: Vec<String>,
     all_codex_profiles: bool,
+    codex_model: Option<String>,
+    codex_reasoning_effort: Option<String>,
+    codex_service_tier: Option<String>,
+    codex_config_overrides: Vec<String>,
     include_rules: bool,
     keep_loaded: bool,
     prompt_input: ComparePromptInput,
@@ -2992,7 +3250,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() && args.transcripts.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-service-tier TIER] [--codex-tier TIER] [--codex-config KEY=VALUE] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
         );
         std::process::exit(1);
     }
@@ -3089,18 +3347,19 @@ fn format_compare(args: Vec<String>) {
                     model: model.clone(),
                     vocabulary: config.vocabulary.clone(),
                 });
-                let started = Instant::now();
-                let (result, metrics) = run_with_resource_sampling(|| {
-                    format_with_ollama_prompt_variant(
+                let ((result, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+                    let started = Instant::now();
+                    let result = format_with_ollama_prompt_variant(
                         &formatter,
                         &transcript,
                         &preformatted,
                         &config,
                         &args,
                         prompt_variant,
-                    )
+                    );
+                    let elapsed_ms = started.elapsed().as_millis();
+                    (result, elapsed_ms)
                 });
-                let elapsed_ms = started.elapsed().as_millis();
                 if !args.keep_loaded {
                     stop_ollama_model_silent(&config.ollama_command, model);
                 }
@@ -3143,6 +3402,7 @@ fn format_compare(args: Vec<String>) {
             }
         }
 
+        // Compare mode must report Codex errors as Codex results, not fallback output.
         for (name, options) in &codex_runs {
             for prompt_variant in &prompt_variants {
                 target_index += 1;
@@ -3167,18 +3427,19 @@ fn format_compare(args: Vec<String>) {
                     }),
                 );
                 let formatter = CodexFormatter::new(options.clone());
-                let started = Instant::now();
-                let (result, metrics) = run_with_resource_sampling(|| {
-                    format_with_codex_prompt_variant(
+                let ((result, elapsed_ms), metrics) = run_with_resource_sampling(|| {
+                    let started = Instant::now();
+                    let result = format_with_codex_prompt_variant(
                         &formatter,
                         &transcript,
                         &preformatted,
                         &config,
                         &args,
                         prompt_variant,
-                    )
+                    );
+                    let elapsed_ms = started.elapsed().as_millis();
+                    (result, elapsed_ms)
                 });
-                let elapsed_ms = started.elapsed().as_millis();
 
                 let result = match result {
                     Ok(output) => FormatCompareResult {
@@ -3337,6 +3598,10 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut include_codex_current = false;
     let mut codex_profiles = Vec::new();
     let mut all_codex_profiles = false;
+    let mut codex_model = None;
+    let mut codex_reasoning_effort = None;
+    let mut codex_service_tier = None;
+    let mut codex_config_overrides = Vec::new();
     let mut include_rules = true;
     let mut keep_loaded = false;
     let mut prompt_input = ComparePromptInput::RawAndPreprocessed;
@@ -3393,6 +3658,40 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--codex" {
             include_codex_current = true;
             index += 1;
+        } else if let Some(value) = arg.strip_prefix("--codex-model=") {
+            codex_model = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-model" {
+            let value = required_cli_value(&args, index, arg);
+            codex_model = normalize_optional_cli_value(&value);
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--codex-effort=")
+            .or_else(|| arg.strip_prefix("--codex-reasoning-effort="))
+        {
+            codex_reasoning_effort = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-effort" || arg == "--codex-reasoning-effort" {
+            let value = required_cli_value(&args, index, arg);
+            codex_reasoning_effort = normalize_optional_cli_value(&value);
+            index += 2;
+        } else if let Some(value) = arg
+            .strip_prefix("--codex-service-tier=")
+            .or_else(|| arg.strip_prefix("--codex-tier="))
+        {
+            codex_service_tier = normalize_optional_cli_value(value);
+            index += 1;
+        } else if arg == "--codex-service-tier" || arg == "--codex-tier" {
+            let value = required_cli_value(&args, index, arg);
+            codex_service_tier = normalize_optional_cli_value(&value);
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--codex-config=") {
+            push_config_override(&mut codex_config_overrides, value);
+            index += 1;
+        } else if arg == "--codex-config" {
+            let value = required_cli_value(&args, index, arg);
+            push_config_override(&mut codex_config_overrides, &value);
+            index += 2;
         } else if let Some(value) = arg.strip_prefix("--codex-profile=") {
             push_model_values(&mut codex_profiles, value);
             index += 1;
@@ -3541,6 +3840,10 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         include_codex_current,
         codex_profiles,
         all_codex_profiles,
+        codex_model,
+        codex_reasoning_effort,
+        codex_service_tier,
+        codex_config_overrides,
         include_rules,
         keep_loaded,
         prompt_input,
@@ -3895,10 +4198,8 @@ fn resolve_codex_compare_runs(
     let mut runs = Vec::new();
 
     if args.include_codex_current {
-        runs.push((
-            format!("codex:{}", CodexOptions::from_config(config).label()),
-            CodexOptions::from_config(config),
-        ));
+        let options = codex_compare_options_from_args(config, args);
+        runs.push((format!("codex:{}", options.label()), options));
     }
 
     if args.all_codex_profiles {
@@ -3928,6 +4229,28 @@ fn resolve_codex_compare_runs(
     }
 
     runs
+}
+
+fn codex_compare_options_from_args(
+    config: &ChirperConfig,
+    args: &FormatCompareArgs,
+) -> CodexOptions {
+    let mut options = CodexOptions::from_config(config);
+
+    if let Some(model) = &args.codex_model {
+        options.model = Some(model.clone());
+    }
+    if let Some(reasoning_effort) = &args.codex_reasoning_effort {
+        options.reasoning_effort = Some(reasoning_effort.clone());
+    }
+    if let Some(service_tier) = &args.codex_service_tier {
+        options.service_tier = Some(service_tier.clone());
+    }
+    if !args.codex_config_overrides.is_empty() {
+        options.config_overrides = args.codex_config_overrides.clone();
+    }
+
+    options
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5006,9 +5329,26 @@ fn format_transcript_with_config(
         }
         FormatterBackend::Codex => {
             let preformatted = format_with_rules(config, transcript, mode)?;
-            CodexFormatter::new(CodexOptions::from_config(config))
-                .format_with_context(transcript, &preformatted, mode)
-                .map_err(|error| error.to_string())
+            match CodexFormatter::new(CodexOptions::from_config(config)).format_with_context(
+                transcript,
+                &preformatted,
+                mode,
+            ) {
+                Ok(text) => Ok(text),
+                Err(codex_error) => {
+                    eprintln!(
+                        "Codex formatter failed; trying Ollama fallback `{}`: {codex_error}",
+                        config.ollama_model
+                    );
+                    OllamaFormatter::new(OllamaOptions::from_config(config))
+                        .format_with_context(transcript, &preformatted, mode)
+                        .map_err(|fallback_error| {
+                            format!(
+                                "Codex formatter failed: {codex_error}; Ollama fallback failed: {fallback_error}"
+                            )
+                        })
+                }
+            }
         }
         FormatterBackend::LlamaCpp => {
             eprintln!("formatter backend llama.cpp is not implemented yet; using raw transcript");
@@ -5062,6 +5402,10 @@ fn load_config_or_exit() -> ChirperConfig {
 
 fn toggle_state_path() -> PathBuf {
     runtime_dir().join("toggle-state")
+}
+
+fn manual_record_state_path() -> PathBuf {
+    runtime_dir().join("record-state")
 }
 
 fn runtime_dir() -> PathBuf {

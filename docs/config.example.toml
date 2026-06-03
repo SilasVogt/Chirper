@@ -52,12 +52,6 @@ whisper_language = "auto"
 ollama_command = "ollama"
 ollama_model = "granite4.1:8b"
 
-# AI formatting presets used by the settings window.
-# low    -> granite4.1:3b, up to 8 GB VRAM
-# medium -> granite4.1:8b, 8 to 12 GB VRAM
-# high   -> granite4.1:8b, 16+ GB VRAM
-ai_hardware_tier = "high"
-
 # If true, the daemon starts loading the selected Ollama model when recording
 # starts. The formatting call asks Ollama to unload after generation.
 ollama_preload_on_recording = true
