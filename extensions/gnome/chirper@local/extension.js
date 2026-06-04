@@ -538,12 +538,12 @@ export default class ChirperExtension extends Extension {
             this._setupMessage = this._setupRequired
                 ? setupMessage(missing)
                 : null;
-            this._syncSetupCheckTimer();
             this._syncPrimaryAction();
             this._syncStatusLabel();
         } catch (error) {
             console.debug(`Chirper: failed to read setup status: ${error.message}`);
         } finally {
+            this._syncSetupCheckTimer();
             this._setupChecking = false;
         }
     }
@@ -911,7 +911,7 @@ export default class ChirperExtension extends Extension {
         if (!this._statusItem || !this._icon)
             return;
 
-        this._statusItem.label.text = `Chirper: ${message}`;
+        this._syncStatusLabel(state, message);
         this._syncPanelIcon(state);
         this._syncPrimaryAction();
         this._setOverlayState(state);

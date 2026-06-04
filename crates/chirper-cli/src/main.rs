@@ -1710,7 +1710,7 @@ fn setup_status(args: Vec<String>) {
     let whisper_model_path = config.whispercpp_model_path.clone();
     let whisper_model_configured = whisper_model_path
         .as_ref()
-        .map(|path| path.exists())
+        .map(|path| path.is_file())
         .unwrap_or(false);
     let formatter_configured = config.formatter_backend != FormatterBackend::None;
     let mut missing = Vec::new();
