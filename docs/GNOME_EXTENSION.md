@@ -19,6 +19,7 @@ From the repository root:
 
 ```sh
 scripts/install-gnome-extension.sh
+chirper-onboarding
 gnome-extensions enable chirper@local
 ```
 
@@ -66,6 +67,10 @@ command is clicked, but the service must be installed first.
 The extension menu has one primary action. It reads `Start Recording` while idle
 and changes to `Stop Recording` while recording. The configured shortcut is shown
 on the right side of that action.
+
+On a fresh install, the primary action reads `Open Setup` until onboarding saves
+a Whisper model path and formatter selection. This prevents the panel from
+starting a recording that cannot be transcribed yet.
 
 The `Input` submenu changes the saved microphone input and includes one-shot
 screen-audio actions for output devices. One-shot screen audio is sent only with

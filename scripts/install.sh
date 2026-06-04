@@ -328,9 +328,19 @@ else
 DONE
 fi
 
+if [ "$gtk_apps_linked" = true ]; then
+  cat <<DONE
+
+First-time setup:
+  $bin_dir/chirper-onboarding
+DONE
+fi
+
 if [ "$with_gnome_extension" = true ]; then
   cat <<DONE
-If the GNOME extension is not visible yet, log out and back in, then run:
+
+After setup, enable or reload the GNOME extension:
   gnome-extensions enable chirper@local
+If the panel item is still not visible, log out and back in.
 DONE
 fi

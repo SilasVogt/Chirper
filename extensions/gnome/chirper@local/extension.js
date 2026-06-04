@@ -39,6 +39,7 @@ const CHECK_UPDATES_KEY = 'check-updates';
 const UPDATE_MODE_KEY = 'update-mode';
 const UPDATE_INITIAL_CHECK_SECONDS = 20;
 const UPDATE_CHECK_SECONDS = 6 * 60 * 60;
+const SETUP_CHECK_SECONDS = 30;
 
 function daemonSocketPath() {
     const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR');
@@ -156,6 +157,21 @@ function shortLabel(value, maxLength = 34) {
     return `${value.slice(0, maxLength - 1)}…`;
 }
 
+function setupMessage(missing) {
+    const values = new Set(missing ?? []);
+    const needsWhisper = values.has('whisper_model');
+    const needsFormatter = values.has('formatter');
+
+    if (needsWhisper && needsFormatter)
+        return 'Choose Whisper and formatter models';
+    if (needsWhisper)
+        return 'Choose a Whisper model';
+    if (needsFormatter)
+        return 'Choose a formatter model';
+
+    return 'Finish onboarding setup';
+}
+
 export default class ChirperExtension extends Extension {
     enable() {
         this._enabled = true;
@@ -172,6 +188,10 @@ export default class ChirperExtension extends Extension {
         this._updateChecking = false;
         this._updateRunning = false;
         this._updateNotifiedForSha = null;
+        this._setupRequired = true;
+        this._setupMessage = 'Checking setup';
+        this._setupChecking = false;
+        this._setupCheckSourceId = 0;
 
         this._rememberFocusedWindow();
         this._focusWindowId = global.display.connect('notify::focus-window', () => {
@@ -182,6 +202,7 @@ export default class ChirperExtension extends Extension {
         this._buildOverlay();
         this._registerKeybinding();
         this._refreshStatus();
+        this._refreshSetupStatus();
         this._scheduleUpdateChecks();
 
         this._pollSourceId = GLib.timeout_add_seconds(
@@ -217,6 +238,11 @@ export default class ChirperExtension extends Extension {
         if (this._updateCheckSourceId) {
             GLib.source_remove(this._updateCheckSourceId);
             this._updateCheckSourceId = 0;
+        }
+
+        if (this._setupCheckSourceId) {
+            GLib.source_remove(this._setupCheckSourceId);
+            this._setupCheckSourceId = 0;
         }
 
         if (this._settingsChangedId) {
@@ -267,6 +293,9 @@ export default class ChirperExtension extends Extension {
         this._updateCheckItem = null;
         this._updateItem = null;
         this._updateStatus = null;
+        this._setupRequired = false;
+        this._setupMessage = null;
+        this._setupChecking = false;
         this._selectedAudioTarget = null;
         this._activeAudioLabel = null;
         this._runtime = null;
@@ -283,8 +312,10 @@ export default class ChirperExtension extends Extension {
         this._indicator.add_child(this._icon);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._menuOpenId = this._indicator.menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
+            if (isOpen) {
                 this._rememberFocusedWindow();
+                this._refreshSetupStatus();
+            }
         });
 
         this._statusItem = new PopupMenu.PopupMenuItem('Chirper: connecting', {
@@ -358,6 +389,12 @@ export default class ChirperExtension extends Extension {
         });
 
         this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const onboardingItem = new PopupMenu.PopupMenuItem('Open Setup Onboarding');
+        onboardingItem.connect('activate', () => {
+            this._openOnboarding();
+        });
+        this._indicator.menu.addMenuItem(onboardingItem);
 
         const preferencesItem = new PopupMenu.PopupMenuItem('Open Settings Window');
         preferencesItem.connect('activate', () => {
@@ -496,6 +533,56 @@ export default class ChirperExtension extends Extension {
         );
     }
 
+    async _refreshSetupStatus() {
+        if (this._setupChecking)
+            return;
+
+        this._setupChecking = true;
+
+        try {
+            const output = await this._runCli(['setup-status', '--json']);
+            const data = JSON.parse(output);
+            const missing = data.missing ?? [];
+
+            this._setupRequired = Boolean(data.setup_required);
+            this._setupMessage = this._setupRequired
+                ? setupMessage(missing)
+                : null;
+            this._syncSetupCheckTimer();
+            this._syncPrimaryAction();
+            this._syncStatusLabel();
+        } catch (error) {
+            console.debug(`Chirper: failed to read setup status: ${error.message}`);
+        } finally {
+            this._setupChecking = false;
+        }
+    }
+
+    _syncSetupCheckTimer() {
+        if (!this._setupRequired && this._setupCheckSourceId) {
+            GLib.source_remove(this._setupCheckSourceId);
+            this._setupCheckSourceId = 0;
+            return;
+        }
+
+        if (!this._setupRequired || this._setupCheckSourceId)
+            return;
+
+        this._setupCheckSourceId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            SETUP_CHECK_SECONDS,
+            () => {
+                this._refreshSetupStatus();
+                if (!this._setupRequired) {
+                    this._setupCheckSourceId = 0;
+                    return GLib.SOURCE_REMOVE;
+                }
+
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
+    }
+
     _positionOverlay() {
         if (!this._overlay)
             return;
@@ -509,6 +596,9 @@ export default class ChirperExtension extends Extension {
     }
 
     async _refreshStatus(force = false) {
+        if (force)
+            this._refreshSetupStatus();
+
         if (this._isProcessingState(this._lastState) && !force)
             return;
 
@@ -538,6 +628,8 @@ export default class ChirperExtension extends Extension {
 
         if (this._lastState === 'recording')
             await this._stopRecordingAndMaybePaste();
+        else if (this._setupRequired)
+            this._openOnboarding();
         else
             await this._startRecording(this._selectedAudioTarget);
     }
@@ -826,10 +918,22 @@ export default class ChirperExtension extends Extension {
 
     _applyLocalState(state, message) {
         this._lastState = state;
-        this._statusItem.label.text = `Chirper: ${message}`;
+        this._syncStatusLabel(state, message);
         this._syncPanelIcon(state);
         this._syncPrimaryAction();
         this._setOverlayState(state);
+    }
+
+    _syncStatusLabel(state = this._lastState, message = null) {
+        if (!this._statusItem)
+            return;
+
+        if (this._setupRequired && !this._isProcessingState(state) && state !== 'recording') {
+            this._statusItem.label.text = 'Chirper: setup needed';
+            return;
+        }
+
+        this._statusItem.label.text = `Chirper: ${message ?? state}`;
     }
 
     _applyResponse(response) {
@@ -902,6 +1006,10 @@ export default class ChirperExtension extends Extension {
             this._primarySubLabel.text = this._activeAudioLabel
                 ? shortLabel(this._activeAudioLabel, 34)
                 : 'Transcribing and formatting';
+        } else if (this._setupRequired) {
+            this._primaryIcon.icon_name = 'preferences-system-symbolic';
+            this._primaryLabel.text = 'Open Setup';
+            this._primarySubLabel.text = this._setupMessage ?? 'Finish onboarding setup';
         } else {
             this._primaryIcon.icon_name = 'audio-input-microphone-symbolic';
             this._primaryLabel.text = 'Start Recording';
@@ -1056,6 +1164,33 @@ export default class ChirperExtension extends Extension {
         } catch (error) {
             Main.notify('Chirper', `Failed to open config folder: ${error.message}`);
         }
+    }
+
+    _openOnboarding() {
+        const argv = this._onboardingCommand();
+
+        try {
+            Gio.Subprocess.new(
+                argv,
+                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE
+            );
+        } catch (error) {
+            Main.notify('Chirper', `Failed to open setup: ${error.message}`);
+        }
+    }
+
+    _onboardingCommand() {
+        if (this._runtime.repoPath) {
+            const launcher = GLib.build_filenamev([
+                this._runtime.repoPath,
+                'scripts',
+                'run-onboarding.sh',
+            ]);
+            if (GLib.file_test(launcher, GLib.FileTest.IS_EXECUTABLE))
+                return [launcher];
+        }
+
+        return ['chirper-onboarding'];
     }
 
     _openPreferences() {

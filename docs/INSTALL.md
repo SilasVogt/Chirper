@@ -123,6 +123,7 @@ ln -sf "$PWD/scripts/run-test-workflow-builder.sh" ~/.local/bin/chirper-test-wor
 Enable the extension:
 
 ```sh
+chirper-onboarding
 gnome-extensions enable chirper@local
 ```
 
@@ -137,8 +138,12 @@ chirper diagnose
 chirper daemon-status
 chirper audio-list
 chirper language-list
-chirper record-test 3
+chirper-onboarding
 ```
+
+Run `chirper-onboarding` before using the GNOME panel item. It selects the
+Whisper model path and formatter model that the daemon needs before recording
+can produce text.
 
 If recording works, test the full daemon path:
 

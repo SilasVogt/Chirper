@@ -88,6 +88,7 @@ jobs:
               --no-whispercpp \
               --no-service
           "$RUNNER_TEMP/chirper-gnome-bin/chirper" gui-current | grep -q '^gui_profile: gnome$'
+          "$RUNNER_TEMP/chirper-gnome-bin/chirper" setup-status --json | grep -q '"setup_required": true'
           test -L "$RUNNER_TEMP/chirper-gnome-bin/chirper-settings"
           test -d "$state/data/gnome-shell/extensions/chirper@local"
 

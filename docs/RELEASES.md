@@ -170,7 +170,8 @@ curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/in
   bash -s -- --ref v0.1.0 --gui gnome --whisper-backend vulkan --whisper-model base
 chirper diagnose
 chirper daemon-status
-chirper record-test 3
+chirper-onboarding
+gnome-extensions enable chirper@local
 chirper daemon-toggle
 ```
 
