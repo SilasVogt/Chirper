@@ -1894,6 +1894,7 @@ fn model_use(selection: Option<String>) {
 }
 
 fn whispercpp_configure(args: Vec<String>) {
+    const USAGE: &str = "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH [--gpu-backend BACKEND]";
     let mut command = None;
     let mut model = None;
     let mut model_path = None;
@@ -1903,55 +1904,60 @@ fn whispercpp_configure(args: Vec<String>) {
     while index < args.len() {
         match args[index].as_str() {
             "--command" => {
-                index += 1;
-                command = args.get(index).cloned();
+                command = Some(required_whispercpp_configure_value(
+                    &args,
+                    index,
+                    "--command",
+                    USAGE,
+                ));
+                index += 2;
             }
             "--model" => {
-                index += 1;
-                model = args.get(index).cloned();
+                model = Some(required_whispercpp_configure_value(
+                    &args, index, "--model", USAGE,
+                ));
+                index += 2;
             }
             "--model-path" => {
-                index += 1;
-                model_path = args.get(index).cloned();
+                model_path = Some(required_whispercpp_configure_value(
+                    &args,
+                    index,
+                    "--model-path",
+                    USAGE,
+                ));
+                index += 2;
             }
             "--gpu-backend" => {
-                index += 1;
-                gpu_backend = args.get(index).cloned();
+                gpu_backend = Some(required_whispercpp_configure_value(
+                    &args,
+                    index,
+                    "--gpu-backend",
+                    USAGE,
+                ));
+                index += 2;
             }
             "-h" | "--help" => {
-                println!(
-                    "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
-                );
+                println!("{USAGE}");
                 return;
             }
             arg => {
                 eprintln!("unknown argument: {arg}");
-                eprintln!(
-                    "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
-                );
+                eprintln!("{USAGE}");
                 std::process::exit(2);
             }
         }
-
-        index += 1;
     }
 
     let Some(command) = command else {
-        eprintln!(
-            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
-        );
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
     let Some(model) = model else {
-        eprintln!(
-            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
-        );
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
     let Some(model_path) = model_path else {
-        eprintln!(
-            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
-        );
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
     let gpu_backend = match gpu_backend
@@ -1981,6 +1987,27 @@ fn whispercpp_configure(args: Vec<String>) {
     println!("whispercpp_command: {command}");
     println!("whispercpp_model_path: {model_path}");
     println!("gpu_backend: {}", gpu_backend.as_config_value());
+}
+
+fn required_whispercpp_configure_value(
+    args: &[String],
+    flag_index: usize,
+    flag: &str,
+    usage: &str,
+) -> String {
+    let Some(value) = args.get(flag_index + 1) else {
+        eprintln!("missing value for {flag}");
+        eprintln!("{usage}");
+        std::process::exit(2);
+    };
+
+    if value.starts_with('-') {
+        eprintln!("missing value for {flag}");
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+
+    value.clone()
 }
 
 fn model_download(args: Vec<String>) {
