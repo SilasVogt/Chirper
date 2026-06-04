@@ -563,11 +563,6 @@ export default class ChirperExtension extends Extension {
             SETUP_CHECK_SECONDS,
             () => {
                 this._refreshSetupStatus();
-                if (!this._setupRequired) {
-                    this._setupCheckSourceId = 0;
-                    return GLib.SOURCE_REMOVE;
-                }
-
                 return GLib.SOURCE_CONTINUE;
             }
         );
