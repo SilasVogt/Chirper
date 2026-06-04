@@ -1980,6 +1980,7 @@ fn whispercpp_configure(args: Vec<String>) {
     println!("whisper_model: {model}");
     println!("whispercpp_command: {command}");
     println!("whispercpp_model_path: {model_path}");
+    println!("gpu_backend: {}", gpu_backend.as_config_value());
 }
 
 fn model_download(args: Vec<String>) {

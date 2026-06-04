@@ -1642,8 +1642,8 @@ mod tests {
         ChirperConfig::save_whispercpp_setup(
             &path,
             "base",
-            "/data/chirper/src/whisper.cpp/build-vulkan/bin/whisper-cli",
-            "/data/chirper/models/ggml-base.bin",
+            "/tmp/whisper-cli",
+            "/tmp/ggml-base.bin",
             GpuBackend::Vulkan,
         )
         .unwrap();
@@ -1654,13 +1654,10 @@ mod tests {
         assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
         assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
         assert_eq!(config.whisper_model, "base");
-        assert_eq!(
-            config.whispercpp_command,
-            "/data/chirper/src/whisper.cpp/build-vulkan/bin/whisper-cli"
-        );
+        assert_eq!(config.whispercpp_command, "/tmp/whisper-cli");
         assert_eq!(
             config.whispercpp_model_path,
-            Some(PathBuf::from("/data/chirper/models/ggml-base.bin"))
+            Some(PathBuf::from("/tmp/ggml-base.bin"))
         );
         assert_eq!(config.whisper_language, Some("de".to_string()));
 
