@@ -289,8 +289,6 @@ export default class ChirperExtension extends Extension {
         this._pasteSwitch = null;
         this._audioMenu = null;
         this._screenAudioMenu = null;
-        this._updateStatusItem = null;
-        this._updateCheckItem = null;
         this._updateItem = null;
         this._updateStatus = null;
         this._setupRequired = false;
@@ -303,7 +301,7 @@ export default class ChirperExtension extends Extension {
     }
 
     _buildPanelIndicator() {
-        this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
+        this._indicator = new PanelMenu.Button(0.5, this.metadata.name, false);
         this._indicator.menu.box.add_style_class_name('chirper-menu');
         this._icon = new St.Icon({
             icon_name: 'audio-input-microphone-symbolic',
@@ -402,20 +400,12 @@ export default class ChirperExtension extends Extension {
         });
         this._indicator.menu.addMenuItem(preferencesItem);
 
-        this._updateStatusItem = new PopupMenu.PopupMenuItem('Updates: not checked', {
-            reactive: false,
-        });
-        this._indicator.menu.addMenuItem(this._updateStatusItem);
-
-        this._updateCheckItem = new PopupMenu.PopupMenuItem('Check for Updates');
-        this._updateCheckItem.connect('activate', () => {
-            this._checkForUpdates(true);
-        });
-        this._indicator.menu.addMenuItem(this._updateCheckItem);
-
-        this._updateItem = new PopupMenu.PopupMenuItem('Update Chirper');
+        this._updateItem = new PopupMenu.PopupMenuItem('Check for updates');
         this._updateItem.connect('activate', () => {
-            this._runUpdate();
+            if (this._updateStatus?.update_available)
+                this._runUpdate();
+            else
+                this._checkForUpdates(true);
         });
         this._indicator.menu.addMenuItem(this._updateItem);
 
@@ -732,10 +722,6 @@ export default class ChirperExtension extends Extension {
                 ? {kind: 'input', target: current.target, label: currentLabel}
                 : null;
             this._audioMenu.label.text = `Input: ${shortLabel(currentLabel, MENU_STATUS_LABEL_MAX)}`;
-            this._audioMenu.menu.addMenuItem(
-                this._disabledItem(`Current: ${shortLabel(currentLabel, MENU_ITEM_LABEL_MAX)}`)
-            );
-            this._audioMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             const defaultLabel = current.target ? 'Default microphone' : '✓ Default microphone';
             const defaultItem = new PopupMenu.PopupMenuItem(defaultLabel);
@@ -820,7 +806,7 @@ export default class ChirperExtension extends Extension {
                     this._updateNotifiedForSha = remote;
                     Main.notify(
                         'Chirper update available',
-                        'Open the Chirper panel menu and choose Update Chirper.'
+                        'Open the Chirper panel menu to update.'
                     );
                 }
             } else if (manual) {
@@ -872,37 +858,18 @@ export default class ChirperExtension extends Extension {
     }
 
     _syncUpdateMenu() {
-        if (!this._updateStatusItem || !this._updateCheckItem || !this._updateItem)
+        if (!this._updateItem)
             return;
 
-        if (this._updateRunning) {
-            this._updateStatusItem.label.text = 'Updates: installing';
-        } else if (this._updateChecking) {
-            this._updateStatusItem.label.text = 'Updates: checking';
-        } else if (this._updateStatus?.error) {
-            this._updateStatusItem.label.text = 'Updates: check failed';
-        } else if (
-            this._updateStatus?.mode === 'releases' &&
-            this._updateStatus.latest_tag === null
-        ) {
-            this._updateStatusItem.label.text = 'Updates: no release tags found';
-        } else if (this._updateStatus?.update_available) {
-            if (this._updateStatus.mode === 'releases' && this._updateStatus.latest_tag)
-                this._updateStatusItem.label.text = `Updates: ${this._updateStatus.latest_tag} available`;
-            else
-                this._updateStatusItem.label.text = `Updates: ${this._updateStatus.behind} commit(s) available`;
-        } else if (this._updateStatus) {
-            this._updateStatusItem.label.text = 'Updates: up to date';
+        if (this._updateStatus?.update_available) {
+            this._updateItem.label.text = 'Click to update';
+        } else if (this._updateStatus && !this._updateStatus.error) {
+            this._updateItem.label.text = 'Running newest version';
         } else {
-            this._updateStatusItem.label.text = 'Updates: not checked';
+            this._updateItem.label.text = 'Check for updates';
         }
 
-        this._updateCheckItem.setSensitive(!this._updateChecking && !this._updateRunning);
-        this._updateItem.setSensitive(
-            !this._updateChecking &&
-                !this._updateRunning &&
-                Boolean(this._updateStatus?.update_available)
-        );
+        this._updateItem.setSensitive(!this._updateChecking && !this._updateRunning);
     }
 
     async _runCli(args) {
