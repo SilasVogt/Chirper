@@ -153,6 +153,7 @@ fi
 for name in \
   chirper \
   chirper-daemon \
+  chirper-settings \
   chirper-onboarding \
   chirper-model-compare \
   chirper-report-viewer \

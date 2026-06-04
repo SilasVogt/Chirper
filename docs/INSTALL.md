@@ -5,8 +5,8 @@ intended for people comfortable installing system dependencies and running local
 AI tooling.
 
 The installer does not install distro packages. It checks for required commands,
-builds Chirper, installs the user service and GNOME extension, and can build
-whisper.cpp plus download an initial model.
+builds Chirper, installs the user service, installs the selected GUI profile,
+and can build whisper.cpp plus download an initial model.
 
 ## Dependencies
 
@@ -53,39 +53,47 @@ above, then run `chirper diagnose` after installation.
 
 ## One-Line Install
 
-Default install:
+Stable GNOME install:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome
 ```
 
 What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`
 - builds `chirper` and `chirper-daemon` in release mode
-- symlinks `chirper`, `chirper-daemon`, `chirper-onboarding`,
+- symlinks `chirper`, `chirper-daemon`, `chirper-settings`, `chirper-onboarding`,
   `chirper-model-compare`, `chirper-report-viewer`, and
   `chirper-test-workflow-builder` into
   `~/.local/bin`
+- saves `gui_profile = "gnome"` or `"none"` so later updates use the same GUI
+  profile by default
 - builds whisper.cpp with `--backend auto --model base`
 - writes a starter config only if `~/.config/chirper/config.toml` does not exist
 - installs and starts `chirper-daemon.service` as a user systemd service
-- installs the GNOME Shell extension into the user extension directory
+- with `--gui gnome`, installs the GNOME Shell extension and links the
+  GTK/libadwaita helper apps
 
 Useful variants:
 
 ```sh
 # Choose the whisper.cpp backend and initial model.
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
-  bash -s -- --whisper-backend vulkan --whisper-model small
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome --whisper-backend vulkan --whisper-model small
 
 # Install the app/service but skip whisper.cpp setup.
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
-  bash -s -- --no-whispercpp
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome --no-whispercpp
 
-# Skip the GNOME extension for non-GNOME systems.
+# Install only the CLI/daemon on non-GNOME systems.
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui none
+
+# Follow main for development or early testing.
 curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
-  bash -s -- --no-gnome-extension
+  bash -s -- --branch main --gui gnome
 ```
 
 If `~/.local/bin` is not on your `PATH`, add:
@@ -105,9 +113,11 @@ CHIRPER_BUILD_PROFILE=release scripts/install-systemd-user-service.sh
 CHIRPER_BUILD_PROFILE=release scripts/install-gnome-extension.sh
 mkdir -p ~/.local/bin
 ln -sf "$PWD/scripts/run-model-compare.sh" ~/.local/bin/chirper-model-compare
+ln -sf "$PWD/scripts/run-settings.sh" ~/.local/bin/chirper-settings
 ln -sf "$PWD/scripts/run-onboarding.sh" ~/.local/bin/chirper-onboarding
 ln -sf "$PWD/scripts/run-report-viewer.sh" ~/.local/bin/chirper-report-viewer
 ln -sf "$PWD/scripts/run-test-workflow-builder.sh" ~/.local/bin/chirper-test-workflow-builder
+~/.local/bin/chirper gui-use gnome
 ```
 
 Enable the extension:
@@ -176,15 +186,24 @@ chirper format-compare --report-dir ./chirper-reports "hello comma world period"
 chirper format-compare --custom-prompt "strict=Return only corrected final text." \
   --transcript "case-1=hello comma world period" \
   --report-dir ./chirper-reports
+```
+
+The compare command runs models sequentially and unloads each model afterward by
+default. Reports include model output, timing, a hardware snapshot, and
+best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
+
+Useful GUI tools from a GNOME install:
+
+```sh
+chirper settings
 chirper-onboarding
 chirper-model-compare
 chirper-report-viewer
 chirper-test-workflow-builder
 ```
 
-The compare command runs models sequentially and unloads each model afterward by
-default. Reports include model output, timing, a hardware snapshot, and
-best-effort average CPU/RAM/GPU/VRAM/power telemetry when the kernel exposes it.
+`chirper settings` opens the settings app for the installed GUI profile. In
+0.1.0, the only GUI settings profile is `gnome`.
 `chirper-model-compare` opens a simple GTK app with tickboxes for installed
 Ollama models, saved Codex configs, prompt-input options, report storage, live
 current-model progress, elapsed runtime, hardware summary, custom prompt
@@ -211,25 +230,20 @@ Chirper currently updates source-based installs. There are two modes:
 - `releases`: compares numeric release tags such as `v0.1.0` and installs the
   highest versioned tag.
 
-The default is `canary`, which keeps early installs on the newest merged `main`
-commit before release tags exist:
+The default is `releases`, which keeps release installs on the newest numeric
+release tag:
 
 ```sh
 chirper update-check
 chirper update-check --json
-```
-
-Apply an update with:
-
-```sh
 chirper update
 ```
 
-To check and install numbered release tags instead:
+To follow `main` instead:
 
 ```sh
-chirper update-check --mode releases
-chirper update --mode releases
+chirper update-check --mode canary
+chirper update --mode canary
 ```
 
 `--channel stable` is accepted as an alias for `--mode releases`, and
@@ -237,9 +251,11 @@ chirper update --mode releases
 
 The updater reruns the installed checkout's `scripts/install.sh`, checks out the
 target branch or tag, rebuilds Chirper, reinstalls the user systemd service and
-GNOME extension, and restarts the daemon. It skips whisper.cpp by default so
-normal app updates do not rebuild the inference backend or redownload models. To
-explicitly include whisper.cpp setup:
+the selected GUI profile, and restarts the daemon. Unless `--gui` is passed, it
+uses `gui_profile` from `~/.config/chirper/config.toml`, so CLI/daemon-only
+installs stay on `--gui none`. It skips whisper.cpp by default so normal app
+updates do not rebuild the inference backend or redownload models. To explicitly
+include whisper.cpp setup:
 
 ```sh
 chirper update --with-whispercpp --whisper-backend vulkan --whisper-model base

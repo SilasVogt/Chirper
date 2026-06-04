@@ -6,19 +6,22 @@ path working for contributors while adding packaged builds for normal users.
 ## Current Install Path
 
 The installer clones or updates the repository, builds release binaries locally,
-installs the user systemd service, installs the GNOME Shell extension, and can
-build whisper.cpp plus download an initial model:
+installs the user systemd service, installs the selected GUI profile, and can
+build whisper.cpp plus download an initial model. The stable command pins both
+the fetched installer and the installed checkout to the release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome
 ```
 
 For testing a development branch, use the branch copy of the script and pass the
 same branch to the checkout:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/codex/release-install-workflow/scripts/install.sh | \
-  bash -s -- --branch codex/release-install-workflow
+branch=your-branch
+curl -fsSL "https://raw.githubusercontent.com/SilasVogt/Chirper/${branch}/scripts/install.sh" | \
+  bash -s -- --branch "$branch" --gui gnome
 ```
 
 The source installer is useful while Chirper is moving quickly, but it requires
@@ -33,8 +36,8 @@ Chirper should use three update channels:
 - `nightly`: the latest successful build from `main`.
 - `source`: a named branch, useful for contributors and testers.
 
-The default public install should eventually use `stable`. Early testers can keep
-using `main` until the first tagged release exists.
+The default public install uses `stable` once `v0.1.0` exists. Testers can opt
+into `main` with `--mode canary` or by installing from `main`.
 
 ## Stable Releases
 
@@ -48,7 +51,8 @@ Recommended flow:
 3. Create a tag such as `v0.1.0`.
 4. GitHub Actions builds release artifacts.
 5. GitHub Actions publishes a GitHub Release with checksums.
-6. The stable installer downloads the latest stable artifact.
+6. The stable installer installs the matching tagged source checkout. Artifact
+   downloads can replace source builds later.
 
 The release artifact should include:
 
@@ -87,25 +91,27 @@ The current update path is source-checkout based and supports two modes:
 - `releases`: checks numeric tags such as `v0.1.0` and targets the highest
   versioned tag.
 
-The default remains `canary` while early testers install from `main`:
+The default is `releases` for stable installs:
 
 ```sh
 chirper update-check
 chirper update
 ```
 
-Release mode is active once tags exist:
+Canary mode follows `main` for development and early testing:
 
 ```sh
-chirper update-check --mode releases
-chirper update --mode releases
+chirper update-check --mode canary
+chirper update --mode canary
 ```
 
 `chirper update` reruns the checkout's `scripts/install.sh`, checks out the
 target branch or release tag, rebuilds release binaries, reinstalls the user
-service, reinstalls the GNOME extension, and restarts the daemon. It skips
-whisper.cpp by default. It refuses to update over local source changes; commit
-or stash changes in the configured source checkout before updating.
+service, reinstalls the selected GUI profile, and restarts the daemon. It skips
+whisper.cpp by default. The selected GUI profile is read from `gui_profile` in
+the Chirper config unless `--gui` is passed. It refuses to update over local
+source changes; commit or stash changes in the configured source checkout before
+updating.
 
 Updates should remain user-local by default:
 
@@ -127,9 +133,9 @@ chirper update --channel stable
 chirper update --channel canary
 ```
 
-`stable` maps to release tags. `canary` maps to `main`. Artifact downloads for
-stable and nightly builds are still future work; current updates rebuild from a
-local source checkout.
+`stable` maps to release tags. `canary` maps to `main`. Current updates rebuild
+from a local source checkout; the release workflow also publishes binary
+artifacts and checksums for users who want to inspect or manually install them.
 
 ## Auto Updating
 
@@ -160,14 +166,16 @@ releases.
 Before the first stable release, test a clean machine or VM with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
-  bash -s -- --whisper-backend vulkan --whisper-model base
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome --whisper-backend vulkan --whisper-model base
 chirper diagnose
 chirper daemon-status
 chirper record-test 3
 chirper daemon-toggle
 ```
 
-CI should also grow an installer smoke test that runs the installer with
-`--no-whispercpp` in a clean Linux runner. That catches shell syntax, path, and
-service/extension packaging errors without requiring GPU access in CI.
+CI also runs installer smoke tests with `--gui none --no-whispercpp
+--no-service` and `--gui gnome --no-whispercpp --no-service` in a clean Linux
+runner. The GNOME pass uses real GTK/libadwaita GJS introspection packages and a
+stubbed `gnome-extensions` command, so it catches script path, dependency, and
+extension packaging regressions without requiring a live GNOME Shell session.

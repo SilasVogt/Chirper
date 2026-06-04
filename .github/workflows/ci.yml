@@ -23,7 +23,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
-          components: rustfmt
+          components: clippy,rustfmt
 
       - name: Check Formatting
         run: cargo fmt --all -- --check
@@ -31,8 +31,65 @@ jobs:
       - name: Check Workspace
         run: cargo check --workspace
 
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Test Workspace
         run: cargo test --workspace
+
+      - name: Install Smoke Test Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gjs \
+            gir1.2-adw-1 \
+            gir1.2-gtk-4.0 \
+            libglib2.0-bin \
+            pipewire-bin \
+            wl-clipboard
+
+      - name: Install Smoke Test
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/chirper-none-state"
+          mkdir -p "$state"
+          XDG_CONFIG_HOME="$state/config" \
+            XDG_DATA_HOME="$state/data" \
+            scripts/install.sh \
+              --source-dir "$PWD" \
+              --bin-dir "$RUNNER_TEMP/chirper-bin" \
+              --profile debug \
+              --gui none \
+              --no-whispercpp \
+              --no-service
+          "$RUNNER_TEMP/chirper-bin/chirper" --version
+          test ! -e "$RUNNER_TEMP/chirper-bin/chirper-settings"
+
+      - name: GNOME Install Smoke Test
+        run: |
+          set -euo pipefail
+          fake_bin="$RUNNER_TEMP/chirper-fake-bin"
+          state="$RUNNER_TEMP/chirper-gnome-state"
+          mkdir -p "$fake_bin" "$state"
+          cat > "$fake_bin/gnome-extensions" <<'SH'
+          #!/usr/bin/env bash
+          exit 1
+          SH
+          chmod +x "$fake_bin/gnome-extensions"
+
+          XDG_CONFIG_HOME="$state/config" \
+            XDG_DATA_HOME="$state/data" \
+            PATH="$fake_bin:$PATH" \
+            scripts/install.sh \
+              --source-dir "$PWD" \
+              --bin-dir "$RUNNER_TEMP/chirper-gnome-bin" \
+              --profile debug \
+              --gui gnome \
+              --no-whispercpp \
+              --no-service
+          "$RUNNER_TEMP/chirper-gnome-bin/chirper" gui-current | grep -q '^gui_profile: gnome$'
+          test -L "$RUNNER_TEMP/chirper-gnome-bin/chirper-settings"
+          test -d "$state/data/gnome-shell/extensions/chirper@local"
 
   scripts-and-gjs:
     name: Scripts and GJS

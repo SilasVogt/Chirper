@@ -1,5 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkflowState {
+    #[default]
     Idle,
     Recording,
     Transcribing,
@@ -8,14 +9,9 @@ pub enum WorkflowState {
     Error,
 }
 
-impl Default for WorkflowState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DictationMode {
+    #[default]
     Auto,
     Standard,
     Email,
@@ -23,9 +19,15 @@ pub enum DictationMode {
     Code,
 }
 
-impl Default for DictationMode {
-    fn default() -> Self {
-        Self::Auto
+impl DictationMode {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Standard => "standard",
+            Self::Email => "email",
+            Self::Command => "command",
+            Self::Code => "code",
+        }
     }
 }
 

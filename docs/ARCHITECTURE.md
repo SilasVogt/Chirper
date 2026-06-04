@@ -27,12 +27,14 @@ chirper-cli
 GNOME Shell extension
   Optional shell integration.
   Provides recording overlay, menu, shortcut, and settings launcher.
-  Talks to daemon over D-Bus once that adapter exists.
+  Talks to the daemon over the Unix socket API today; D-Bus can wrap the same
+  commands later.
 
 GTK/libadwaita settings app
   Optional settings frontend.
   Edits config, models, dictionaries, snippets, and diagnostics.
-  Talks to daemon over D-Bus or config service methods.
+  Talks to the CLI/config helpers today; D-Bus or config service methods can
+  replace that once the control surface settles.
 
 GTK/libadwaita test tools
   Optional local experimentation frontends.
@@ -77,6 +79,24 @@ Backends should be swappable behind narrow interfaces:
 
 The first implementation can be direct and in-process. A later external plugin API can wrap these same concepts through subprocesses or D-Bus once the contracts settle.
 
+## Frontend Integration
+
+Chirper is designed so AI agents and contributors can add another GUI without
+copying the dictation pipeline. A new GUI should treat `chirper-daemon` and the
+documented [Local API](API.md) as the product boundary:
+
+- call daemon commands for recording state
+- use CLI/config commands for model, audio, language, and formatter settings
+- keep toolkit-specific code under a frontend directory such as `apps/` or
+  `extensions/`
+- do not spawn `pw-record`, run `whisper-cli`, call Ollama/Codex, or write to
+  the clipboard directly from the GUI
+
+That lets GNOME, KDE, wlroots widgets, and experiment apps share the same audio,
+ASR, formatting, insertion, and update behavior. If a GUI needs a daemon feature
+that is not in the API yet, add the daemon/API command first, then build the GUI
+on top of that command.
+
 ## Initial Backend Choices
 
 | Area | First backend | Later backends |
@@ -102,4 +122,4 @@ The GTK/libadwaita app exists for settings and diagnostics, not as a permanently
 
 ## Contributor Boundaries
 
-Future contributors should be able to add a backend by implementing one contract and registering it in the daemon. A new frontend should only need the public daemon API and event stream.
+Future contributors should be able to add a backend by implementing one contract and registering it in the daemon. A new frontend should only need the public daemon API and, once added, the event stream.

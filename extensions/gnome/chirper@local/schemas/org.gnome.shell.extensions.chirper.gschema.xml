@@ -17,9 +17,9 @@
       <description>When enabled, the GNOME Shell extension periodically checks whether the installed source checkout is behind its upstream branch and shows a notification when an update is available.</description>
     </key>
     <key name="update-mode" type="s">
-      <default>'canary'</default>
+      <default>'releases'</default>
       <summary>Update mode</summary>
-      <description>Update channel used by the extension and settings window. Use releases for numbered release tags, or canary for the main branch.</description>
+      <description>Update channel used by the extension and settings window. Releases follows numbered tags, while canary follows the main branch.</description>
     </key>
   </schema>
 </schemalist>

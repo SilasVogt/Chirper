@@ -114,8 +114,8 @@ Maintenance commands:
 ```sh
 chirper update-check
 chirper update
-chirper update-check --mode releases
-chirper update --mode releases
+chirper update-check --mode canary
+chirper update --mode canary
 chirper uninstall
 ```
 
