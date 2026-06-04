@@ -185,8 +185,27 @@ fi
 write_default_config() {
   config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/chirper"
   config_path="$config_dir/config.toml"
+  chirper_cli="${CHIRPER_CLI:-}"
 
   mkdir -p "$config_dir"
+
+  if [ -z "$chirper_cli" ] && command -v chirper >/dev/null 2>&1; then
+    chirper_cli="$(command -v chirper)"
+  fi
+
+  if [ -n "$chirper_cli" ] && [ -x "$chirper_cli" ]; then
+    if "$chirper_cli" whispercpp-configure \
+      --command "$build_dir/bin/whisper-cli" \
+      --model "$model" \
+      --model-path "$model_path" \
+      --gpu-backend "$backend"; then
+      echo
+      echo "Updated Chirper config at $config_path"
+      return
+    fi
+
+    echo "Could not update config through $chirper_cli; falling back to starter config behavior." >&2
+  fi
 
   if [ -f "$config_path" ]; then
     echo

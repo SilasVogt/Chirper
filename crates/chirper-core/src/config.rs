@@ -344,6 +344,65 @@ impl ChirperConfig {
         })
     }
 
+    pub fn save_whispercpp_setup(
+        path: impl AsRef<Path>,
+        model: &str,
+        command: &str,
+        model_path: impl AsRef<Path>,
+        gpu_backend: GpuBackend,
+    ) -> ChirperResult<()> {
+        let model = model.trim();
+        let command = command.trim();
+        let model_path = model_path.as_ref();
+
+        if model.is_empty() {
+            return Err(ChirperError::Configuration(
+                "whisper model cannot be empty".to_string(),
+            ));
+        }
+        if command.is_empty() {
+            return Err(ChirperError::Configuration(
+                "whisper.cpp command cannot be empty".to_string(),
+            ));
+        }
+        if model_path.as_os_str().is_empty() {
+            return Err(ChirperError::Configuration(
+                "whisper.cpp model path cannot be empty".to_string(),
+            ));
+        }
+        let model_path_str = model_path.to_str().ok_or_else(|| {
+            ChirperError::Configuration("whisper.cpp model path contains invalid UTF-8".to_string())
+        })?;
+
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+        table.insert(
+            "asr_backend".to_string(),
+            toml::Value::String("whisper-cpp".to_string()),
+        );
+        table.insert(
+            "gpu_backend".to_string(),
+            toml::Value::String(gpu_backend.as_config_value().to_string()),
+        );
+        table.insert(
+            "whisper_model".to_string(),
+            toml::Value::String(model.to_string()),
+        );
+        table.insert(
+            "whispercpp_command".to_string(),
+            toml::Value::String(command.to_string()),
+        );
+        table.insert(
+            "whispercpp_model_path".to_string(),
+            toml::Value::String(model_path_str.to_string()),
+        );
+        table
+            .entry("whisper_language".to_string())
+            .or_insert_with(|| toml::Value::String("auto".to_string()));
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_audio_target(path: impl AsRef<Path>, target: Option<&str>) -> ChirperResult<()> {
         let path = path.as_ref();
         let mut table = if path.exists() {
@@ -768,6 +827,21 @@ impl ChirperConfig {
         Self::save_model_selection(Self::default_path(), model, model_path)
     }
 
+    pub fn save_default_whispercpp_setup(
+        model: &str,
+        command: &str,
+        model_path: impl AsRef<Path>,
+        gpu_backend: GpuBackend,
+    ) -> ChirperResult<()> {
+        Self::save_whispercpp_setup(
+            Self::default_path(),
+            model,
+            command,
+            model_path,
+            gpu_backend,
+        )
+    }
+
     pub fn save_default_audio_target(target: Option<&str>) -> ChirperResult<()> {
         Self::save_audio_target(Self::default_path(), target)
     }
@@ -1032,6 +1106,19 @@ pub enum GpuBackend {
     Rocm,
     Cuda,
     OpenVino,
+}
+
+impl GpuBackend {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Vulkan => "vulkan",
+            Self::Rocm => "rocm",
+            Self::Cuda => "cuda",
+            Self::OpenVino => "openvino",
+        }
+    }
 }
 
 impl FromStr for GpuBackend {
@@ -1531,6 +1618,48 @@ mod tests {
             config.whispercpp_model_path,
             Some(PathBuf::from("/models/ggml-small.bin"))
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_whispercpp_setup_updates_existing_config() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "whispercpp"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gui_profile = "gnome"
+            formatter_backend = "none"
+            whisper_language = "de"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_whispercpp_setup(
+            &path,
+            "base",
+            "/tmp/whisper-cli",
+            "/tmp/ggml-base.bin",
+            GpuBackend::Vulkan,
+        )
+        .unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gui_profile, GuiProfile::Gnome);
+        assert_eq!(config.formatter_backend, FormatterBackend::None);
+        assert_eq!(config.asr_backend, AsrBackend::WhisperCpp);
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "base");
+        assert_eq!(config.whispercpp_command, "/tmp/whisper-cli");
+        assert_eq!(
+            config.whispercpp_model_path,
+            Some(PathBuf::from("/tmp/ggml-base.bin"))
+        );
+        assert_eq!(config.whisper_language, Some("de".to_string()));
 
         let _ = fs::remove_file(path);
     }

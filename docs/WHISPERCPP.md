@@ -75,8 +75,10 @@ and downloads models under:
 ```
 
 It prints the config snippet to add to `~/.config/chirper/config.toml`.
-With `--write-config`, it writes a starter config only when the config file does
-not already exist.
+With `--write-config`, it updates the whisper.cpp command, model name, model
+path, and GPU backend in the existing config when the Chirper CLI is available.
+If the CLI is not available yet, it falls back to writing a starter config only
+when the config file does not already exist.
 
 ## Model Selection
 
