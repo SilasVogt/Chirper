@@ -1142,7 +1142,7 @@ export default class ChirperExtension extends Extension {
     }
 
     _onboardingCommand() {
-        if (this._runtime.repoPath) {
+        if (this._runtime?.repoPath) {
             const launcher = GLib.build_filenamev([
                 this._runtime.repoPath,
                 'scripts',
