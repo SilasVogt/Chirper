@@ -50,10 +50,13 @@ After installing:
 ```sh
 chirper diagnose
 chirper daemon-status
-chirper audio-list
-chirper record-test 3
+chirper-onboarding
 chirper settings
 ```
+
+`chirper-onboarding` is the first-run setup flow. It lets you pick the Whisper
+transcription model and formatter model before the GNOME panel item starts
+recording.
 
 Check for updates. By default, release installs compare against numeric release
 tags:
@@ -84,8 +87,8 @@ chirper daemon-toggle
 chirper daemon-toggle
 ```
 
-The final text should be copied to your clipboard. On GNOME, enable the
-extension if needed:
+The final text should be copied to your clipboard. On GNOME, enable or reload
+the extension after onboarding:
 
 ```sh
 gnome-extensions enable chirper@local

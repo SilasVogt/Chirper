@@ -126,6 +126,11 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("setup-status")) {
+        setup_status(args.collect());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("model-current")) {
         model_current();
         return;
@@ -346,6 +351,7 @@ Core commands:
   start | stop | toggle         Control dictation
   daemon-status                Check the user daemon
   diagnose                     Check local runtime dependencies
+  setup-status                 Check whether onboarding setup is complete
   audio-list                   List PipeWire audio targets
   model-list                   List local Whisper models
   formatter-current            Show formatter config
@@ -1695,6 +1701,62 @@ fn onboarding_check(args: Vec<String>) {
                 "missing"
             }
         );
+    }
+}
+
+fn setup_status(args: Vec<String>) {
+    let json = args.iter().any(|arg| arg == "--json");
+    let config = load_config_or_exit();
+    let whisper_model_path = config.whispercpp_model_path.clone();
+    let whisper_model_configured = whisper_model_path
+        .as_ref()
+        .map(|path| path.is_file())
+        .unwrap_or(false);
+    let formatter_configured = config.formatter_backend != FormatterBackend::None;
+    let mut missing = Vec::new();
+
+    if !whisper_model_configured {
+        missing.push("whisper_model");
+    }
+    if !formatter_configured {
+        missing.push("formatter");
+    }
+
+    let setup_required = !missing.is_empty();
+
+    if json {
+        let value = serde_json::json!({
+            "setup_required": setup_required,
+            "missing": missing,
+            "whisper": {
+                "model": config.whisper_model,
+                "path": whisper_model_path,
+                "configured": whisper_model_configured,
+            },
+            "formatter": {
+                "backend": config.formatter_backend.as_config_value(),
+                "configured": formatter_configured,
+                "ollama_model": config.ollama_model,
+                "codex_model": config.codex_model,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
+    }
+
+    println!(
+        "setup: {}",
+        if setup_required {
+            "incomplete"
+        } else {
+            "complete"
+        }
+    );
+    println!("whisper_model_configured: {whisper_model_configured}");
+    println!("formatter_configured: {formatter_configured}");
+    if !missing.is_empty() {
+        println!("missing: {}", missing.join(", "));
+        println!("run: chirper-onboarding");
     }
 }
 
