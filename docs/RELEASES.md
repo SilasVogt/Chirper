@@ -81,24 +81,31 @@ does not accumulate old test builds forever.
 
 ## Updating
 
-The current update path is source-checkout based. It checks whether the installed
-checkout is behind its upstream branch:
+The current update path is source-checkout based and supports two modes:
+
+- `canary`: checks whether the installed checkout is behind `origin/main`.
+- `releases`: checks numeric tags such as `v0.1.0` and targets the highest
+  versioned tag.
+
+The default remains `canary` while early testers install from `main`:
 
 ```sh
 chirper update-check
-```
-
-Apply the update with:
-
-```sh
 chirper update
 ```
 
-`chirper update` reruns the checkout's `scripts/install.sh`, pulls the configured
-branch, rebuilds release binaries, reinstalls the user service, reinstalls the
-GNOME extension, and restarts the daemon. It skips whisper.cpp by default.
-It refuses to pull over local source changes; commit or stash changes in the
-configured source checkout before updating.
+Release mode is active once tags exist:
+
+```sh
+chirper update-check --mode releases
+chirper update --mode releases
+```
+
+`chirper update` reruns the checkout's `scripts/install.sh`, checks out the
+target branch or release tag, rebuilds release binaries, reinstalls the user
+service, reinstalls the GNOME extension, and restarts the daemon. It skips
+whisper.cpp by default. It refuses to update over local source changes; commit
+or stash changes in the configured source checkout before updating.
 
 Updates should remain user-local by default:
 
@@ -113,15 +120,16 @@ GNOME Shell extension updates are different: on Wayland, GNOME may keep old
 extension code loaded until the user logs out and back in. The updater can copy
 new files immediately, but it should tell the user when a relog is required.
 
-When stable and nightly artifacts exist, the same CLI should grow channel-aware
-commands. These `chirper update --channel` examples are planned syntax, not
-implemented yet; the current commands are `chirper update-check` and
-`chirper update` without a channel flag.
+The CLI accepts channel aliases for the source updater:
 
 ```sh
 chirper update --channel stable
-chirper update --channel nightly
+chirper update --channel canary
 ```
+
+`stable` maps to release tags. `canary` maps to `main`. Artifact downloads for
+stable and nightly builds are still future work; current updates rebuild from a
+local source checkout.
 
 ## Auto Updating
 
@@ -131,9 +139,9 @@ changes.
 
 Recommended first version:
 
-- `chirper update-check` reports whether the installed source checkout is behind.
+- `chirper update-check` reports whether the configured update mode is behind.
 - when automatic checks are enabled, the GNOME extension periodically runs
-  `chirper update-check --json`.
+  `chirper update-check --json --mode <mode>`.
 - the GNOME extension shows a notification when an update is available.
 - the GNOME panel menu and settings window expose an explicit update button.
 

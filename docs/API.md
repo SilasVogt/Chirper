@@ -109,6 +109,16 @@ cargo run -p chirper-cli -- daemon-shutdown
 The existing standalone `chirper toggle` command is still separate. It is useful
 from a terminal because it does not require a daemon process.
 
+Maintenance commands:
+
+```sh
+chirper update-check
+chirper update
+chirper update-check --mode releases
+chirper update --mode releases
+chirper uninstall
+```
+
 ## Frontend Contract
 
 A frontend may:

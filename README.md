@@ -51,11 +51,25 @@ chirper audio-list
 chirper record-test 3
 ```
 
-Check for source-install updates:
+Check for updates. By default, early installs use canary mode and compare
+against `main`:
 
 ```sh
 chirper update-check
 chirper update
+```
+
+Release-tag mode is available once tags such as `v0.1.0` exist:
+
+```sh
+chirper update-check --mode releases
+chirper update --mode releases
+```
+
+Uninstall user-local install artifacts while keeping config and models:
+
+```sh
+chirper uninstall
 ```
 
 Test the full daemon path:

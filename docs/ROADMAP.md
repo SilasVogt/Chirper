@@ -71,6 +71,8 @@ This file is the project checklist. Keep it updated as implementation choices be
 - [x] Add public install guide and one-line bootstrap script.
 - [x] Document stable, nightly, and update channel plan.
 - [x] Add explicit `chirper update` and `chirper update-check` commands.
+- [x] Add user-local uninstall command.
+- [x] Add release-tag and canary update modes.
 - [ ] Add release artifact packaging workflow.
 - [ ] Add nightly prerelease workflow.
 - [ ] Add KDE/Qt frontend notes.
