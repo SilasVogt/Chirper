@@ -290,14 +290,14 @@ if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   echo "  export PATH=\"$bin_dir:\$PATH\""
 fi
 
-"$repo_root/target/$target_dir/chirper" gui-use "$gui" >/dev/null
-
 if [ "$with_whispercpp" = true ]; then
-  "$repo_root/scripts/setup-whispercpp.sh" \
+  CHIRPER_CLI="$repo_root/target/$target_dir/chirper" "$repo_root/scripts/setup-whispercpp.sh" \
     --backend "$whisper_backend" \
     --model "$whisper_model" \
     --write-config
 fi
+
+"$repo_root/target/$target_dir/chirper" gui-use "$gui" >/dev/null
 
 if [ "$with_service" = true ]; then
   CHIRPER_BUILD_PROFILE="$build_profile" CHIRPER_SKIP_BUILD=1 \

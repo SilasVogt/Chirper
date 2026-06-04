@@ -19,7 +19,7 @@ use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
-    FormatterBackend, GuiProfile, ServiceCommand, TextInserter, TranscriptionProfile,
+    FormatterBackend, GpuBackend, GuiProfile, ServiceCommand, TextInserter, TranscriptionProfile,
     WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
@@ -128,6 +128,11 @@ fn main() {
 
     if matches!(first.as_deref(), Some("setup-status")) {
         setup_status(args.collect());
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("whispercpp-configure")) {
+        whispercpp_configure(args.collect());
         return;
     }
 
@@ -1886,6 +1891,95 @@ fn model_use(selection: Option<String>) {
     println!("selected whisper model: {model}");
     println!("path: {}", path.display());
     println!("the daemon will use this for the next transcription");
+}
+
+fn whispercpp_configure(args: Vec<String>) {
+    let mut command = None;
+    let mut model = None;
+    let mut model_path = None;
+    let mut gpu_backend = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--command" => {
+                index += 1;
+                command = args.get(index).cloned();
+            }
+            "--model" => {
+                index += 1;
+                model = args.get(index).cloned();
+            }
+            "--model-path" => {
+                index += 1;
+                model_path = args.get(index).cloned();
+            }
+            "--gpu-backend" => {
+                index += 1;
+                gpu_backend = args.get(index).cloned();
+            }
+            "-h" | "--help" => {
+                println!(
+                    "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
+                );
+                return;
+            }
+            arg => {
+                eprintln!("unknown argument: {arg}");
+                eprintln!(
+                    "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
+                );
+                std::process::exit(2);
+            }
+        }
+
+        index += 1;
+    }
+
+    let Some(command) = command else {
+        eprintln!(
+            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
+        );
+        std::process::exit(2);
+    };
+    let Some(model) = model else {
+        eprintln!(
+            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
+        );
+        std::process::exit(2);
+    };
+    let Some(model_path) = model_path else {
+        eprintln!(
+            "usage: chirper whispercpp-configure --command PATH --model NAME --model-path PATH --gpu-backend BACKEND"
+        );
+        std::process::exit(2);
+    };
+    let gpu_backend = match gpu_backend
+        .as_deref()
+        .unwrap_or("auto")
+        .parse::<GpuBackend>()
+    {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(error) = ChirperConfig::save_default_whispercpp_setup(
+        &model,
+        &command,
+        PathBuf::from(&model_path),
+        gpu_backend,
+    ) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("configured whisper.cpp");
+    println!("whisper_model: {model}");
+    println!("whispercpp_command: {command}");
+    println!("whispercpp_model_path: {model_path}");
 }
 
 fn model_download(args: Vec<String>) {
