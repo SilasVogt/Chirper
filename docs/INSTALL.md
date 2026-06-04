@@ -71,8 +71,8 @@ What it does:
 - saves `gui_profile = "gnome"` or `"none"` so later updates use the same GUI
   profile by default
 - builds whisper.cpp with `--backend auto --model base`
-- writes or updates the whisper.cpp command, model path, and GPU backend in
-  `~/.config/chirper/config.toml`
+- writes or updates the whisper.cpp command, model name, model path, and GPU
+  backend in `~/.config/chirper/config.toml`
 - installs and starts `chirper-daemon.service` as a user systemd service
 - with `--gui gnome`, installs the GNOME Shell extension and links the
   GTK/libadwaita helper apps
