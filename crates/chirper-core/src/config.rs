@@ -159,10 +159,7 @@ impl ChirperConfig {
         }
 
         if let Some(value) = table.get("last_ai_formatter_backend") {
-            let backend: FormatterBackend = parse_config_value("last_ai_formatter_backend", value)?;
-            if backend.is_ai() {
-                config.last_ai_formatter_backend = Some(backend);
-            }
+            config.last_ai_formatter_backend = parse_last_ai_formatter_backend(value)?;
         }
 
         if let Some(value) = table.get("insertion_backend") {
@@ -401,6 +398,12 @@ impl ChirperConfig {
         backend: FormatterBackend,
         ollama_model: Option<&str>,
     ) -> ChirperResult<()> {
+        if backend == FormatterBackend::LlamaCpp {
+            return Err(ChirperError::Configuration(
+                "formatter backend llama.cpp is not available in Chirper 0.1.0".to_string(),
+            ));
+        }
+
         let path = path.as_ref();
         let mut table = if path.exists() {
             let content = fs::read_to_string(path).map_err(|source| {
@@ -1130,6 +1133,23 @@ where
     parse_string(key, value)?.parse()
 }
 
+fn parse_last_ai_formatter_backend(value: &toml::Value) -> ChirperResult<Option<FormatterBackend>> {
+    let value = parse_string("last_ai_formatter_backend", value)?;
+
+    if is_legacy_llama_cpp_formatter(value) {
+        return Ok(None);
+    }
+
+    let backend = value
+        .parse::<FormatterBackend>()
+        .map_err(|_| unknown_value("last_ai_formatter_backend", value))?;
+    Ok(backend.is_ai().then_some(backend))
+}
+
+fn is_legacy_llama_cpp_formatter(value: &str) -> bool {
+    normalize(value) == "llamacpp"
+}
+
 fn parse_string<'a>(key: &str, value: &'a toml::Value) -> ChirperResult<&'a str> {
     value
         .as_str()
@@ -1458,6 +1478,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_llama_cpp_as_active_formatter_backend() {
+        let result = ChirperConfig::from_toml_str(r#"formatter_backend = "llama.cpp""#);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ignores_legacy_llama_cpp_last_ai_formatter_backend() {
+        let config = ChirperConfig::from_toml_str(
+            r#"
+            formatter_backend = "rules"
+            last_ai_formatter_backend = "llama.cpp"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.formatter_backend, FormatterBackend::Rules);
+        assert_eq!(config.last_ai_formatter_backend, None);
+    }
+
+    #[test]
     fn derives_model_name_from_standard_ggml_path() {
         let model = ChirperConfig::model_name_from_path("/models/ggml-large-v3-turbo-q5_0.bin");
 
@@ -1581,6 +1622,28 @@ mod tests {
             Some(FormatterBackend::Codex)
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_formatter_selection_rejects_llama_cpp_backend() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "formatter-llama-cpp"
+        ));
+        fs::write(&path, r#"formatter_backend = "rules""#).unwrap();
+
+        let result = ChirperConfig::save_formatter_selection(
+            &path,
+            FormatterBackend::LlamaCpp,
+            Some("ignored"),
+        );
+
+        assert!(result.is_err());
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+        assert_eq!(config.formatter_backend, FormatterBackend::Rules);
 
         let _ = fs::remove_file(path);
     }
