@@ -370,6 +370,9 @@ impl ChirperConfig {
                 "whisper.cpp model path cannot be empty".to_string(),
             ));
         }
+        let model_path_str = model_path.to_str().ok_or_else(|| {
+            ChirperError::Configuration("whisper.cpp model path contains invalid UTF-8".to_string())
+        })?;
 
         let path = path.as_ref();
         let mut table = read_config_table(path)?;
@@ -391,7 +394,7 @@ impl ChirperConfig {
         );
         table.insert(
             "whispercpp_model_path".to_string(),
-            toml::Value::String(model_path.display().to_string()),
+            toml::Value::String(model_path_str.to_string()),
         );
         table
             .entry("whisper_language".to_string())
