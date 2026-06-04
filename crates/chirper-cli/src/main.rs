@@ -19,8 +19,8 @@ use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
-    FormatterBackend, ServiceCommand, TextInserter, TranscriptionProfile, WorkflowState,
-    WHISPER_MODEL_NAMES,
+    FormatterBackend, GuiProfile, ServiceCommand, TextInserter, TranscriptionProfile,
+    WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -60,6 +60,16 @@ const ONBOARDING_OLLAMA_MODELS: &[&str] = &["granite4.1:3b", "granite4.1:8b", "o
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next();
+
+    if matches!(first.as_deref(), Some("-h" | "--help" | "help")) {
+        print_help();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("-V" | "--version" | "version")) {
+        println!("chirper {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
 
     if let Some(request) = parse_daemon_request(first.as_deref()) {
         call_daemon(request);
@@ -200,6 +210,16 @@ fn main() {
         return;
     }
 
+    if matches!(first.as_deref(), Some("gui-current")) {
+        gui_current();
+        return;
+    }
+
+    if matches!(first.as_deref(), Some("gui-use")) {
+        gui_use(args.next());
+        return;
+    }
+
     if matches!(first.as_deref(), Some("ai-format-current")) {
         ai_format_current(args.collect());
         return;
@@ -306,22 +326,39 @@ fn main() {
     match command {
         ServiceCommand::GetStatus => print_status(),
         ServiceCommand::Toggle => toggle(),
-        ServiceCommand::StartRecording => {
-            println!("start recording requested");
-            println!("daemon control is not implemented yet");
-        }
-        ServiceCommand::StopRecording => {
-            println!("stop recording requested");
-            println!("daemon control is not implemented yet");
-        }
-        ServiceCommand::SetMode(mode) => {
-            println!("mode change requested: {mode:?}");
-            println!("daemon control is not implemented yet");
-        }
-        ServiceCommand::OpenSettings => {
-            println!("settings app is not implemented yet");
-        }
+        ServiceCommand::StartRecording => call_daemon(ApiRequest::StartRecording { audio: None }),
+        ServiceCommand::StopRecording => call_daemon(ApiRequest::StopRecording),
+        ServiceCommand::SetMode(mode) => set_mode(mode),
+        ServiceCommand::OpenSettings => open_settings(),
     }
+}
+
+fn print_help() {
+    println!(
+        "\
+chirper {}
+
+Usage:
+  chirper <command> [options]
+
+Core commands:
+  status                       Show local config status
+  start | stop | toggle         Control dictation
+  daemon-status                Check the user daemon
+  diagnose                     Check local runtime dependencies
+  audio-list                   List PipeWire audio targets
+  model-list                   List local Whisper models
+  formatter-current            Show formatter config
+  gui-current                  Show installed GUI profile
+  gui-use                      Select installed GUI profile
+  settings                     Open the installed GUI settings app
+  update-check                 Check for release updates
+  update                       Install an available update
+  uninstall                    Remove user-local install artifacts
+
+Run a subcommand with --help where supported for detailed options.",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn parse_daemon_request(command: Option<&str>) -> Option<ApiRequest> {
@@ -384,9 +421,9 @@ struct UpdateOptions {
     branch: Option<String>,
     mode: UpdateMode,
     profile: String,
+    gui: GuiProfile,
     with_whispercpp: bool,
     with_service: bool,
-    with_gnome_extension: bool,
     whisper_backend: Option<String>,
     whisper_model: Option<String>,
     reinstall: bool,
@@ -527,7 +564,7 @@ fn update(args: Vec<String>) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+            eprintln!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--gui gnome|none] [--with-whispercpp] [--no-service] [--reinstall] [--dry-run]");
             std::process::exit(2);
         }
     };
@@ -583,7 +620,9 @@ fn update(args: Vec<String>) {
         .arg("--source-dir")
         .arg(status.source_dir())
         .arg("--profile")
-        .arg(&options.profile);
+        .arg(&options.profile)
+        .arg("--gui")
+        .arg(options.gui.as_config_value());
 
     match target_ref {
         UpdateTargetRef::Branch(branch) => {
@@ -600,10 +639,6 @@ fn update(args: Vec<String>) {
 
     if !options.with_service {
         command.arg("--no-service");
-    }
-
-    if !options.with_gnome_extension {
-        command.arg("--no-gnome-extension");
     }
 
     if let Some(backend) = &options.whisper_backend {
@@ -728,9 +763,9 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
         branch: None,
         mode: default_update_mode()?,
         profile: env::var("CHIRPER_BUILD_PROFILE").unwrap_or_else(|_| "release".to_string()),
+        gui: default_gui_profile()?,
         with_whispercpp: false,
         with_service: true,
-        with_gnome_extension: true,
         whisper_backend: None,
         whisper_model: None,
         reinstall: false,
@@ -769,6 +804,13 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
                     .to_string();
                 index += 2;
             }
+            "--gui" => {
+                options.gui = parse_gui_profile(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--gui requires gnome or none".to_string())?,
+                )?;
+                index += 2;
+            }
             "--with-whispercpp" => {
                 options.with_whispercpp = true;
                 index += 1;
@@ -795,8 +837,8 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
                 options.with_service = false;
                 index += 1;
             }
-            "--no-gnome-extension" => {
-                options.with_gnome_extension = false;
+            "--no-gui" | "--no-gnome-extension" => {
+                options.gui = GuiProfile::None;
                 index += 1;
             }
             "--reinstall" => {
@@ -808,7 +850,7 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
                 index += 1;
             }
             "-h" | "--help" => {
-                println!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--with-whispercpp] [--no-service] [--no-gnome-extension] [--reinstall] [--dry-run]");
+                println!("usage: chirper update [--mode releases|canary] [--source-dir PATH] [--branch NAME] [--profile debug|release] [--gui gnome|none] [--with-whispercpp] [--no-service] [--reinstall] [--dry-run]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown update argument: {other}")),
@@ -826,7 +868,7 @@ fn parse_update_args(args: Vec<String>) -> Result<UpdateOptions, String> {
 fn default_update_mode() -> Result<UpdateMode, String> {
     match env::var("CHIRPER_UPDATE_MODE") {
         Ok(value) if !value.trim().is_empty() => parse_update_mode(&value),
-        _ => Ok(UpdateMode::Canary),
+        _ => Ok(UpdateMode::Releases),
     }
 }
 
@@ -838,6 +880,21 @@ fn parse_update_mode(value: &str) -> Result<UpdateMode, String> {
             "unsupported update mode `{other}`; use releases or canary"
         )),
     }
+}
+
+fn default_gui_profile() -> Result<GuiProfile, String> {
+    match env::var("CHIRPER_GUI") {
+        Ok(value) if !value.trim().is_empty() => parse_gui_profile(&value),
+        _ => ChirperConfig::load_default()
+            .map(|config| config.gui_profile)
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn parse_gui_profile(value: &str) -> Result<GuiProfile, String> {
+    value
+        .parse::<GuiProfile>()
+        .map_err(|error| error.to_string())
 }
 
 fn update_status(
@@ -1200,7 +1257,11 @@ fn parse_command(mut args: impl Iterator<Item = String>) -> ServiceCommand {
         Some("stop") => ServiceCommand::StopRecording,
         Some("settings") => ServiceCommand::OpenSettings,
         Some("mode") => parse_mode(args.next().as_deref()),
-        Some(_) => ServiceCommand::GetStatus,
+        Some(command) => {
+            eprintln!("unknown command: {command}");
+            eprintln!("run `chirper --help` for available commands");
+            std::process::exit(2);
+        }
     }
 }
 
@@ -1417,17 +1478,14 @@ fn transcribe_file(args: Vec<String>) {
     println!("{}", transcript.text);
 }
 
-fn parse_transcribe_file_args(
-    args: Vec<String>,
-) -> Result<
-    (
-        bool,
-        Option<String>,
-        Option<String>,
-        Option<TranscriptionProfile>,
-    ),
-    String,
-> {
+type TranscribeFileArgs = (
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<TranscriptionProfile>,
+);
+
+fn parse_transcribe_file_args(args: Vec<String>) -> Result<TranscribeFileArgs, String> {
     let mut json = false;
     let mut profile = None;
     let mut positional = Vec::new();
@@ -1586,7 +1644,7 @@ fn onboarding_check(args: Vec<String>) {
             .map(|name| {
                 serde_json::json!({
                     "name": name,
-                    "installed": ollama_model_names.iter().any(|model| *model == *name),
+                    "installed": ollama_model_names.contains(name),
                 })
             })
             .collect::<Vec<_>>(),
@@ -2118,10 +2176,7 @@ fn audio_list(args: Vec<String>) {
     println!();
     println!("microphone inputs:");
     println!("  {:<8} {:<8} {:<42} Description", "id", "serial", "target");
-    println!(
-        "  {:<8} {:<8} {:<42} {}",
-        "-", "-", "auto", "Default microphone"
-    );
+    println!("  {:<8} {:<8} {:<42} Default microphone", "-", "-", "auto");
 
     for node in nodes
         .iter()
@@ -2249,7 +2304,7 @@ fn formatter_current(args: Vec<String>) {
 
 fn formatter_use(args: Vec<String>) {
     let Some(selection) = args.first() else {
-        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex|llama.cpp> [model]");
+        eprintln!("usage: chirper formatter-use <none|rules|ollama|codex> [model]");
         std::process::exit(1);
     };
 
@@ -3797,17 +3852,17 @@ fn format_compare(args: Vec<String>) {
     let total_elapsed_ms = compare_started.elapsed().as_millis();
     let tested_models = tested_model_count(&results);
     let report_paths = args.report_dir.as_ref().map(|directory| {
-        write_format_compare_reports(
-            directory,
-            &hardware,
-            args.mode,
-            args.prompt_input,
-            args.prompt_note.as_deref(),
+        let context = FormatCompareReportContext {
+            hardware: &hardware,
+            mode: args.mode,
+            prompt_input: args.prompt_input,
+            prompt_note: args.prompt_note.as_deref(),
             total_elapsed_ms,
-            &prompt_variants,
-            &transcript_cases,
-            &results,
-        )
+            prompt_variants: &prompt_variants,
+            transcripts: &transcript_cases,
+            results: &results,
+        };
+        write_format_compare_reports(directory, context)
     });
     emit_compare_progress(
         &args,
@@ -5056,16 +5111,20 @@ fn hardware_json(hardware: &HardwareSnapshot) -> serde_json::Value {
     })
 }
 
-fn write_format_compare_reports(
-    directory: &Path,
-    hardware: &HardwareSnapshot,
+struct FormatCompareReportContext<'a> {
+    hardware: &'a HardwareSnapshot,
     mode: DictationMode,
     prompt_input: ComparePromptInput,
-    prompt_note: Option<&str>,
+    prompt_note: Option<&'a str>,
     total_elapsed_ms: u128,
-    prompt_variants: &[ComparePromptVariant],
-    transcripts: &[NamedTranscript],
-    results: &[FormatCompareResult],
+    prompt_variants: &'a [ComparePromptVariant],
+    transcripts: &'a [NamedTranscript],
+    results: &'a [FormatCompareResult],
+}
+
+fn write_format_compare_reports(
+    directory: &Path,
+    context: FormatCompareReportContext<'_>,
 ) -> Result<Vec<PathBuf>, String> {
     fs::create_dir_all(directory).map_err(|source| {
         format!(
@@ -5080,8 +5139,9 @@ fn write_format_compare_reports(
 
     let mut paths = Vec::new();
 
-    for (prompt_index, prompt_variant) in prompt_variants.iter().enumerate() {
-        let prompt_results = results
+    for (prompt_index, prompt_variant) in context.prompt_variants.iter().enumerate() {
+        let prompt_results = context
+            .results
             .iter()
             .filter(|result| result.prompt_name == prompt_variant.name)
             .collect::<Vec<_>>();
@@ -5110,10 +5170,14 @@ fn write_format_compare_reports(
             format_tested_summary(prompt_results.len(), prompt_elapsed_ms)
         );
         let _ = writeln!(report, "prompt_elapsed_ms: {prompt_elapsed_ms}");
-        let _ = writeln!(report, "full_run_elapsed_ms: {total_elapsed_ms}");
-        let _ = writeln!(report, "mode: {mode:?}");
-        let _ = writeln!(report, "prompt_input: {}", prompt_input.label());
-        if let Some(prompt_note) = prompt_note.map(str::trim).filter(|note| !note.is_empty()) {
+        let _ = writeln!(report, "full_run_elapsed_ms: {}", context.total_elapsed_ms);
+        let _ = writeln!(report, "mode: {:?}", context.mode);
+        let _ = writeln!(report, "prompt_input: {}", context.prompt_input.label());
+        if let Some(prompt_note) = context
+            .prompt_note
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+        {
             let _ = writeln!(report, "prompt_note:");
             let _ = writeln!(report, "{prompt_note}");
         }
@@ -5124,10 +5188,10 @@ fn write_format_compare_reports(
         }
         let _ = writeln!(report);
         let _ = writeln!(report, "Hardware:");
-        write_hardware_snapshot(&mut report, hardware);
+        write_hardware_snapshot(&mut report, context.hardware);
         let _ = writeln!(report);
         let _ = writeln!(report, "Transcripts:");
-        for transcript in transcripts {
+        for transcript in context.transcripts {
             let _ = writeln!(report);
             let _ = writeln!(report, "--- {} ---", transcript.name);
             let _ = writeln!(report, "{}", transcript.text);
@@ -5501,15 +5565,95 @@ fn toggle() {
 }
 
 fn parse_mode(value: Option<&str>) -> ServiceCommand {
-    let mode = match value {
-        Some("standard") => DictationMode::Standard,
-        Some("email") => DictationMode::Email,
-        Some("command") => DictationMode::Command,
-        Some("code") => DictationMode::Code,
-        _ => DictationMode::Auto,
+    let Some(value) = value else {
+        eprintln!("usage: chirper mode <auto|standard|email|command|code>");
+        std::process::exit(1);
+    };
+    let Some(mode) = parse_mode_name(value) else {
+        eprintln!("unknown dictation mode: {value}");
+        eprintln!("usage: chirper mode <auto|standard|email|command|code>");
+        std::process::exit(1);
     };
 
     ServiceCommand::SetMode(mode)
+}
+
+fn set_mode(mode: DictationMode) {
+    if let Err(error) = ChirperConfig::save_default_dictation_mode(mode) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected dictation mode: {}", mode.as_config_value());
+    println!("the daemon will use this for the next transcription");
+}
+
+fn gui_current() {
+    let config = load_config_or_exit();
+    println!("gui_profile: {}", config.gui_profile.as_config_value());
+}
+
+fn gui_use(profile: Option<String>) {
+    let Some(profile) = profile else {
+        eprintln!("usage: chirper gui-use <gnome|none>");
+        std::process::exit(1);
+    };
+    let profile = match parse_gui_profile(&profile) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("usage: chirper gui-use <gnome|none>");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(error) = ChirperConfig::save_default_gui_profile(profile) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+
+    println!("selected GUI profile: {}", profile.as_config_value());
+}
+
+fn open_settings() {
+    let config = load_config_or_exit();
+    let Some(launcher) = settings_launcher(config.gui_profile) else {
+        eprintln!(
+            "no GUI settings app is installed for profile `{}`",
+            config.gui_profile.as_config_value()
+        );
+        eprintln!("install one with `scripts/install.sh --gui gnome` or select it with `chirper gui-use gnome` after installation");
+        std::process::exit(1);
+    };
+
+    if chirper_platform::find_executable(launcher).is_none() {
+        eprintln!("settings launcher not found: {launcher}");
+        eprintln!(
+            "reinstall with `scripts/install.sh --gui {}`",
+            config.gui_profile.as_config_value()
+        );
+        std::process::exit(1);
+    }
+
+    match Command::new(launcher)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("failed to open {launcher}: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn settings_launcher(profile: GuiProfile) -> Option<&'static str> {
+    match profile {
+        GuiProfile::Gnome => Some("chirper-settings"),
+        GuiProfile::None => None,
+    }
 }
 
 fn print_status() {
@@ -5535,6 +5679,7 @@ fn print_status() {
     println!("formatter_backend: {:?}", config.formatter_backend);
     println!("insertion_backend: {:?}", config.insertion_backend);
     println!("dictation_mode: {:?}", config.dictation_mode);
+    println!("gui_profile: {}", config.gui_profile.as_config_value());
     println!("whisper_model: {}", config.whisper_model);
     println!("whispercpp_command: {}", config.whispercpp_command);
     println!(
@@ -5665,8 +5810,7 @@ fn format_transcript_with_config(
             }
         }
         FormatterBackend::LlamaCpp => {
-            eprintln!("formatter backend llama.cpp is not implemented yet; using raw transcript");
-            Ok(transcript.text.clone())
+            Err("formatter backend llama.cpp is not available in Chirper 0.1.0".to_string())
         }
     }
 }

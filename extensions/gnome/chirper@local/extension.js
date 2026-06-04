@@ -716,7 +716,7 @@ export default class ChirperExtension extends Extension {
                 'update-check',
                 '--json',
                 '--mode',
-                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'releases',
             ]);
             const data = JSON.parse(output);
             this._updateStatus = data;
@@ -758,7 +758,7 @@ export default class ChirperExtension extends Extension {
             await this._runCli([
                 'update',
                 '--mode',
-                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'releases',
             ]);
             this._updateStatus = null;
             this._updateNotifiedForSha = null;

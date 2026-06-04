@@ -452,11 +452,7 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
             }
         }
         FormatterBackend::LlamaCpp => {
-            eprintln!(
-                "formatter backend {:?} is not implemented yet; using raw transcript",
-                config.formatter_backend
-            );
-            Ok(transcript.text.clone())
+            Err("formatter backend llama.cpp is not available in Chirper 0.1.0".to_string())
         }
     }
 }

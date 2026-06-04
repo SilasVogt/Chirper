@@ -31,10 +31,13 @@ This repo is early but usable for local testing on Linux. The current path is:
 
 ## Install
 
-The installer checks dependencies but does not install distro packages.
+The stable installer checks dependencies but does not install distro packages.
+`--gui gnome` makes the desktop scope explicit: it installs the GNOME Shell
+extension and GTK/libadwaita helper apps.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
+  bash -s -- --ref v0.1.0 --gui gnome
 ```
 
 See [Install](docs/INSTALL.md) for dependency lists, install options, and first
@@ -49,21 +52,22 @@ chirper diagnose
 chirper daemon-status
 chirper audio-list
 chirper record-test 3
+chirper settings
 ```
 
-Check for updates. By default, early installs use canary mode and compare
-against `main`:
+Check for updates. By default, release installs compare against numeric release
+tags:
 
 ```sh
 chirper update-check
 chirper update
 ```
 
-Release-tag mode is available once tags such as `v0.1.0` exist:
+Canary mode is available for testers who want to follow `main`:
 
 ```sh
-chirper update-check --mode releases
-chirper update --mode releases
+chirper update-check --mode canary
+chirper update --mode canary
 ```
 
 Uninstall user-local install artifacts while keeping config and models:
@@ -101,6 +105,7 @@ The durable docs are:
 - [Example Config](docs/config.example.toml)
 - [Development](docs/DEVELOPMENT.md)
 - [GNOME Extension](docs/GNOME_EXTENSION.md)
+- [Frontend Integration](docs/ARCHITECTURE.md#frontend-integration)
 - [Roadmap](docs/ROADMAP.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [whisper.cpp Setup](docs/WHISPERCPP.md)

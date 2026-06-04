@@ -77,9 +77,8 @@ pulse animation. While recording or processing, the overlay includes the selecte
 input or screen-audio label when the daemon reports one.
 
 The panel menu keeps quick controls at the top level: paste behavior, audio
-input selection, one-shot screen audio, transcription speed, Whisper model
-selection/downloads, formatter selection, status refresh, daemon restart, and
-config folder actions.
+input selection, one-shot screen audio, update checks, status refresh, daemon
+restart, and config folder actions.
 `Open Settings Window` launches a small Adwaita preferences window from the
 installed extension directory.
 
@@ -137,11 +136,7 @@ formatting is enabled, the daemon sends the raw transcript to the selected model
 and copies/pastes the model output. Prompt logs are stored beside the config at
 `~/.config/chirper/prompt-logs`.
 
-The older `Formatter` submenu can still switch between local rules, no
-formatting, Codex CLI, and installed Ollama models. The daemon reads config on
-the next transcription.
-
-The panel menu and settings window also expose transcription speed profiles.
+The settings window also exposes transcription speed profiles.
 `Balanced` keeps whisper.cpp defaults, while `Fast` uses lower-latency decoder
 settings and may trade some accuracy for quicker stop-to-text turnaround.
 

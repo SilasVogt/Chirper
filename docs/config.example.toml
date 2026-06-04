@@ -33,6 +33,10 @@ insertion_backend = "clipboard"
 # code/command convert ambiguous words like "dot", "at", "space", and "pipe".
 dictation_mode = "auto"
 
+# Installer-selected GUI profile. "gnome" launches the GNOME settings app from
+# `chirper settings`; "none" disables GUI launchers for CLI/daemon-only installs.
+gui_profile = "gnome"
+
 whisper_model = "base"
 
 # The wrapper expects whisper.cpp's CLI. The current upstream binary is usually

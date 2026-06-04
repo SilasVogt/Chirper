@@ -50,6 +50,7 @@ pub struct ChirperConfig {
     pub last_ai_formatter_backend: Option<FormatterBackend>,
     pub insertion_backend: InsertionBackend,
     pub dictation_mode: DictationMode,
+    pub gui_profile: GuiProfile,
     pub whisper_model: String,
     pub whispercpp_command: String,
     pub whispercpp_model_path: Option<PathBuf>,
@@ -81,6 +82,7 @@ impl Default for ChirperConfig {
             last_ai_formatter_backend: None,
             insertion_backend: InsertionBackend::Clipboard,
             dictation_mode: DictationMode::Auto,
+            gui_profile: GuiProfile::Gnome,
             whisper_model: "base".to_string(),
             whispercpp_command: "whisper-cli".to_string(),
             whispercpp_model_path: None,
@@ -169,6 +171,10 @@ impl ChirperConfig {
 
         if let Some(value) = table.get("dictation_mode") {
             config.dictation_mode = parse_config_value("dictation_mode", value)?;
+        }
+
+        if let Some(value) = table.get("gui_profile") {
+            config.gui_profile = parse_config_value("gui_profile", value)?;
         }
 
         if let Some(value) = table.get("whisper_model") {
@@ -486,6 +492,30 @@ impl ChirperConfig {
         write_config_table(path, &table)
     }
 
+    pub fn save_dictation_mode(path: impl AsRef<Path>, mode: DictationMode) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+
+        table.insert(
+            "dictation_mode".to_string(),
+            toml::Value::String(mode.as_config_value().to_string()),
+        );
+
+        write_config_table(path, &table)
+    }
+
+    pub fn save_gui_profile(path: impl AsRef<Path>, profile: GuiProfile) -> ChirperResult<()> {
+        let path = path.as_ref();
+        let mut table = read_config_table(path)?;
+
+        table.insert(
+            "gui_profile".to_string(),
+            toml::Value::String(profile.as_config_value().to_string()),
+        );
+
+        write_config_table(path, &table)
+    }
+
     pub fn save_codex_selection(
         path: impl AsRef<Path>,
         model: Option<&str>,
@@ -754,6 +784,14 @@ impl ChirperConfig {
         Self::save_transcription_profile(Self::default_path(), profile)
     }
 
+    pub fn save_default_dictation_mode(mode: DictationMode) -> ChirperResult<()> {
+        Self::save_dictation_mode(Self::default_path(), mode)
+    }
+
+    pub fn save_default_gui_profile(profile: GuiProfile) -> ChirperResult<()> {
+        Self::save_gui_profile(Self::default_path(), profile)
+    }
+
     pub fn save_default_codex_selection(
         model: Option<&str>,
         profile: Option<&str>,
@@ -819,6 +857,33 @@ pub struct CodexProfileConfig {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub config_overrides: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuiProfile {
+    Gnome,
+    None,
+}
+
+impl GuiProfile {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Gnome => "gnome",
+            Self::None => "none",
+        }
+    }
+}
+
+impl FromStr for GuiProfile {
+    type Err = ChirperError;
+
+    fn from_str(value: &str) -> ChirperResult<Self> {
+        match normalize(value).as_str() {
+            "gnome" => Ok(Self::Gnome),
+            "none" | "nogui" | "disabled" | "off" => Ok(Self::None),
+            _ => Err(unknown_value("gui_profile", value)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1003,7 +1068,7 @@ impl FormatterBackend {
     }
 
     pub fn is_ai(self) -> bool {
-        matches!(self, Self::Ollama | Self::Codex | Self::LlamaCpp)
+        matches!(self, Self::Ollama | Self::Codex)
     }
 }
 
@@ -1016,7 +1081,6 @@ impl FromStr for FormatterBackend {
             "rules" | "rulebased" | "localrules" => Ok(Self::Rules),
             "ollama" => Ok(Self::Ollama),
             "codex" | "codexcli" | "openai" => Ok(Self::Codex),
-            "llamacpp" => Ok(Self::LlamaCpp),
             _ => Err(unknown_value("formatter_backend", value)),
         }
     }
@@ -1279,6 +1343,7 @@ mod tests {
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
         assert_eq!(config.insertion_backend, InsertionBackend::Clipboard);
         assert_eq!(config.dictation_mode, DictationMode::Auto);
+        assert_eq!(config.gui_profile, GuiProfile::Gnome);
         assert_eq!(config.whispercpp_command, "whisper-cli");
         assert_eq!(config.whispercpp_model_path, None);
     }
@@ -1291,10 +1356,11 @@ mod tests {
             transcription_profile = "fast"
             pipewire_target = "alsa_input.usb-example.mic"
             gpu_backend = "HIP"
-            formatter_backend = "llama.cpp"
-            last_ai_formatter_backend = "llama.cpp"
+            formatter_backend = "codex"
+            last_ai_formatter_backend = "codex"
             insertion_backend = "i_bus"
             dictation_mode = "code"
+            gui_profile = "no-gui"
             whisper_model = "small"
             whispercpp_command = "/opt/whisper.cpp/build/bin/whisper-cli"
             whispercpp_model_path = "/models/ggml-small.bin"
@@ -1326,13 +1392,14 @@ mod tests {
             Some("alsa_input.usb-example.mic".to_string())
         );
         assert_eq!(config.gpu_backend, GpuBackend::Rocm);
-        assert_eq!(config.formatter_backend, FormatterBackend::LlamaCpp);
+        assert_eq!(config.formatter_backend, FormatterBackend::Codex);
         assert_eq!(
             config.last_ai_formatter_backend,
-            Some(FormatterBackend::LlamaCpp)
+            Some(FormatterBackend::Codex)
         );
         assert_eq!(config.insertion_backend, InsertionBackend::IBus);
         assert_eq!(config.dictation_mode, DictationMode::Code);
+        assert_eq!(config.gui_profile, GuiProfile::None);
         assert_eq!(config.whisper_model, "small");
         assert_eq!(
             config.whispercpp_model_path,
@@ -1495,13 +1562,13 @@ mod tests {
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
 
-        ChirperConfig::save_formatter_selection(&path, FormatterBackend::LlamaCpp, None).unwrap();
+        ChirperConfig::save_formatter_selection(&path, FormatterBackend::Codex, None).unwrap();
         let config = ChirperConfig::load_from_path(&path).unwrap();
 
-        assert_eq!(config.formatter_backend, FormatterBackend::LlamaCpp);
+        assert_eq!(config.formatter_backend, FormatterBackend::Codex);
         assert_eq!(
             config.last_ai_formatter_backend,
-            Some(FormatterBackend::LlamaCpp)
+            Some(FormatterBackend::Codex)
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
 
@@ -1511,7 +1578,7 @@ mod tests {
         assert_eq!(config.formatter_backend, FormatterBackend::Rules);
         assert_eq!(
             config.last_ai_formatter_backend,
-            Some(FormatterBackend::LlamaCpp)
+            Some(FormatterBackend::Codex)
         );
         assert_eq!(config.ollama_model, "llama3.2:latest");
 
@@ -1571,6 +1638,58 @@ mod tests {
         assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
         assert_eq!(config.whisper_model, "small");
         assert_eq!(config.transcription_profile, TranscriptionProfile::Fast);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_dictation_mode_updates_only_mode_field() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "dictation-mode"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_dictation_mode(&path, DictationMode::Code).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.dictation_mode, DictationMode::Code);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_gui_profile_updates_only_profile_field() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "gui-profile"
+        ));
+        fs::write(
+            &path,
+            r#"
+            gpu_backend = "vulkan"
+            whisper_model = "small"
+            "#,
+        )
+        .unwrap();
+
+        ChirperConfig::save_gui_profile(&path, GuiProfile::None).unwrap();
+        let config = ChirperConfig::load_from_path(&path).unwrap();
+
+        assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
+        assert_eq!(config.whisper_model, "small");
+        assert_eq!(config.gui_profile, GuiProfile::None);
 
         let _ = fs::remove_file(path);
     }

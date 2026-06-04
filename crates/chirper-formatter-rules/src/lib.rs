@@ -185,12 +185,12 @@ fn match_spoken_list(
 fn match_list_start(tokens: &[Token]) -> Option<(SpokenListKind, usize)> {
     for prefix in [0, 2, 3] {
         if prefix == 2
-            && !(tokens.get(0)?.normalized == "this" && tokens.get(1)?.normalized == "is")
+            && !(tokens.first()?.normalized == "this" && tokens.get(1)?.normalized == "is")
         {
             continue;
         }
         if prefix == 3
-            && !(tokens.get(0)?.normalized == "this"
+            && !(tokens.first()?.normalized == "this"
                 && tokens.get(1)?.normalized == "is"
                 && matches!(tokens.get(2)?.normalized.as_str(), "a" | "the"))
         {
@@ -343,8 +343,7 @@ fn render_list_item(
     }
 
     let last = raw.last_mut()?;
-    *last =
-        last.trim_end_matches(|character| matches!(character, ',' | '.' | '?' | '!' | ':' | ';'));
+    *last = last.trim_end_matches([',', '.', '?', '!', ':', ';']);
 
     let text = raw
         .iter()
@@ -464,7 +463,7 @@ fn parse_spelling_value(
     let mut all_caps = false;
     let mut terminator = None;
 
-    if tokens.get(0).map(|token| token.normalized.as_str()) == Some("all")
+    if tokens.first().map(|token| token.normalized.as_str()) == Some("all")
         && tokens.get(1).map(|token| token.normalized.as_str()) == Some("caps")
     {
         all_caps = true;
@@ -1221,8 +1220,7 @@ fn email_part_token(token: &str) -> String {
 
 fn domain_token(token: &str) -> Option<(String, &'static str)> {
     let punctuation = trailing_punctuation(token).unwrap_or("");
-    let domain = token
-        .trim_end_matches(|character: char| matches!(character, ',' | '.' | '?' | '!' | ':' | ';'));
+    let domain = token.trim_end_matches([',', '.', '?', '!', ':', ';']);
 
     if known_domain(domain) {
         Some((domain.to_string(), punctuation))

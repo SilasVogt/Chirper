@@ -79,14 +79,12 @@ function runDetached(argv) {
 }
 
 function isAiFormatterBackend(backend) {
-    return backend === 'ollama' || backend === 'codex' || backend === 'llama.cpp';
+    return backend === 'ollama' || backend === 'codex';
 }
 
 function formatAiFormatterBackend(backend) {
     if (backend === 'codex')
         return 'Codex';
-    if (backend === 'llama.cpp')
-        return 'llama.cpp';
     return 'Ollama';
 }
 
@@ -224,8 +222,8 @@ class ChirperPreferencesBuilder {
         });
         generalGroup.add(updateCheckRow);
 
-        const updateMode = this._settings.get_string(UPDATE_MODE_KEY) || 'canary';
-        const defaultUpdateModeIndex = UPDATE_MODES.indexOf('canary');
+        const updateMode = this._settings.get_string(UPDATE_MODE_KEY) || 'releases';
+        const defaultUpdateModeIndex = UPDATE_MODES.indexOf('releases');
         const updateModeIndex = UPDATE_MODES.includes(updateMode)
             ? UPDATE_MODES.indexOf(updateMode)
             : defaultUpdateModeIndex;
@@ -238,7 +236,7 @@ class ChirperPreferencesBuilder {
         updateModeRow.connect('notify::selected', row => {
             this._settings.set_string(
                 UPDATE_MODE_KEY,
-                UPDATE_MODES[row.selected] ?? 'canary'
+                UPDATE_MODES[row.selected] ?? 'releases'
             );
         });
         generalGroup.add(updateModeRow);
@@ -497,7 +495,7 @@ class ChirperPreferencesBuilder {
                 'update-check',
                 '--json',
                 '--mode',
-                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'releases',
             ]);
             const data = JSON.parse(output);
             this._lastUpdateStatus = data;
@@ -523,7 +521,7 @@ class ChirperPreferencesBuilder {
             await this._runCli([
                 'update',
                 '--mode',
-                this._settings.get_string(UPDATE_MODE_KEY) || 'canary',
+                this._settings.get_string(UPDATE_MODE_KEY) || 'releases',
             ]);
             this._updateRunning = false;
             this._syncUpdateButtons();
@@ -830,8 +828,6 @@ class ChirperPreferencesBuilder {
                 this._aiStatusRow.subtitle = `Ollama: ${data.model}`;
             } else if (backend === 'codex') {
                 this._aiStatusRow.subtitle = 'Codex CLI';
-            } else if (backend === 'llama.cpp') {
-                this._aiStatusRow.subtitle = 'llama.cpp';
             } else {
                 this._aiStatusRow.subtitle = 'Off';
             }
