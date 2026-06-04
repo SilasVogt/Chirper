@@ -174,6 +174,8 @@ chirper record-test 3
 chirper daemon-toggle
 ```
 
-CI also runs an installer smoke test with `--gui none --no-whispercpp
---no-service` in a clean Linux runner. That catches shell syntax, path, and
-basic packaging errors without requiring GPU access in CI.
+CI also runs installer smoke tests with `--gui none --no-whispercpp
+--no-service` and `--gui gnome --no-whispercpp --no-service` in a clean Linux
+runner. The GNOME pass uses real GTK/libadwaita GJS introspection packages and a
+stubbed `gnome-extensions` command, so it catches script path, dependency, and
+extension packaging regressions without requiring a live GNOME Shell session.
