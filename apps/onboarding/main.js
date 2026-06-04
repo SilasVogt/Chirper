@@ -447,6 +447,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         this._recordingPath = null;
         this._formatRetryRecording = false;
         this._formatRetryRecordingPath = null;
+        this._refreshingChecks = false;
         this._build();
         this._refreshChecks();
         this._refreshIntegrationStatus();
@@ -813,6 +814,8 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
     _setStep(step) {
         this._step = step;
         this._stack.visible_child_name = ['setup', 'record', 'format', 'save'][step];
+        if (this._step === 0)
+            this._refreshChecks({ showProgress: false });
         this._syncNavigation();
     }
 
@@ -989,21 +992,32 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         this._extensionSettings.set_boolean(CHECK_UPDATES_KEY, this._updateChecksRow.selected === 1);
     }
 
-    async _refreshChecks() {
+    async _refreshChecks({ showProgress = true } = {}) {
+        if (this._refreshingChecks)
+            return false;
+
+        this._refreshingChecks = true;
         this._refreshChecksButton.sensitive = false;
-        this._clearRows(this._setupGroup, this._setupRows);
-        this._addInfoRow(this._setupGroup, this._setupRows, 'Checking setup', 'Running Chirper diagnostics.');
+        if (showProgress) {
+            this._clearRows(this._setupGroup, this._setupRows);
+            this._addInfoRow(this._setupGroup, this._setupRows, 'Checking setup', 'Running Chirper diagnostics.');
+        }
 
         try {
             this._checks = await runCliJson(['onboarding-check', '--json']);
             this._renderChecks();
         } catch (error) {
-            this._clearRows(this._setupGroup, this._setupRows);
-            this._addInfoRow(this._setupGroup, this._setupRows, 'Setup checks unavailable', error.message);
+            if (showProgress) {
+                this._clearRows(this._setupGroup, this._setupRows);
+                this._addInfoRow(this._setupGroup, this._setupRows, 'Setup checks unavailable', error.message);
+            }
         } finally {
             this._refreshChecksButton.sensitive = true;
+            this._refreshingChecks = false;
             this._syncNavigation();
         }
+
+        return true;
     }
 
     _renderChecks() {
@@ -1203,7 +1217,9 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
             }
         }
 
-        this._syncNavigation();
+        const refreshRan = await this._refreshChecks({ showProgress: false });
+        if (!refreshRan)
+            this._syncNavigation();
     }
 
     _addWhisperResult(model, transcript, error, elapsedMs = null, metrics = null) {
