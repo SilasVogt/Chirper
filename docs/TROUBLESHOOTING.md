@@ -40,6 +40,26 @@ Extension "chirper@local" does not exist
 the files may be installed but the running Shell has not discovered them. On
 Wayland, log out and back in, then run the enable command again.
 
+## GNOME Extension Is Out Of Date
+
+After a GNOME upgrade, the extension can stop loading, and
+`gnome-extensions info chirper@local` shows:
+
+```text
+State: OUT OF DATE
+```
+
+GNOME Shell only loads extensions whose `metadata.json` lists its major version
+(`gnome-shell --version`). Update Chirper to a version that supports it, then
+log out and back in:
+
+```sh
+chirper update
+```
+
+If the newest release does not support your GNOME version yet, follow `main`
+with `chirper update --mode canary`.
+
 ## GNOME Extension Shows Daemon Unavailable
 
 Make sure the service is installed and running:

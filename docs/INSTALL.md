@@ -21,7 +21,7 @@ Required for the normal local dictation loop:
 
 Required for the GNOME extension and settings window:
 
-- GNOME Shell 50
+- GNOME Shell 50 or 51
 - `gnome-extensions`
 - `glib-compile-schemas`
 - `gjs`

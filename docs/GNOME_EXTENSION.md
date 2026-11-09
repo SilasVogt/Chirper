@@ -6,12 +6,19 @@ documented in [Local API](API.md).
 
 ## Target
 
-- GNOME Shell 50
+- GNOME Shell 50 or 51
 - GJS 1.88 or newer
 - `chirper-daemon` running in the user session
 
 The extension uses the GNOME 45+ ES module extension style, which remains the
-current pattern for GNOME Shell 50.
+current pattern for GNOME Shell 50 and 51.
+
+GNOME Shell refuses to load the extension on a major version that is not listed
+in `shell-version` in `metadata.json` (`State: OUT OF DATE`). Before adding a
+new version, check that release's
+[porting guide](https://gjs.guide/extensions/upgrading/) for removed APIs. For
+example, GNOME Shell 51 removed the `vertical` property of St widgets, so boxes
+use `orientation` instead.
 
 ## Install
 

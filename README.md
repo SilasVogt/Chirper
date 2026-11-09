@@ -18,8 +18,8 @@ This repo is early but usable for local testing on Linux. The current path is:
 - optional Codex CLI proofreading
 - clipboard insertion
 - daemon API for frontends
-- GNOME Shell 50 extension with recording controls, overlay, audio input
-  selection, and settings
+- GNOME Shell 50 and 51 extension with recording controls, overlay, audio
+  input selection, and settings
 - GTK/libadwaita onboarding app for checking dependencies, testing Whisper and
   formatter models, saving a recommended config, and cleaning up unused setup
   models
