@@ -60,6 +60,11 @@ curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/in
   bash -s -- --ref v0.1.0 --gui gnome
 ```
 
+Release 0.1.0 supports GNOME Shell 50 only. On GNOME Shell 51, use the `main`
+install from the variants below until a newer release is out, and keep updates
+on canary (see
+[GNOME Extension Is Out Of Date](TROUBLESHOOTING.md#gnome-extension-is-out-of-date)).
+
 What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`

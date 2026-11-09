@@ -40,6 +40,15 @@ curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/in
   bash -s -- --ref v0.1.0 --gui gnome
 ```
 
+Release 0.1.0 supports GNOME Shell 50 only. On GNOME Shell 51, install from
+`main` until a newer release is out, and keep updates on canary (see
+[GNOME Extension Is Out Of Date](docs/TROUBLESHOOTING.md#gnome-extension-is-out-of-date)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
+  bash -s -- --branch main --gui gnome
+```
+
 See [Install](docs/INSTALL.md) for dependency lists, install options, and first
 checks.
 

@@ -58,7 +58,17 @@ chirper update
 ```
 
 If the newest release does not support your GNOME version yet, follow `main`
-with `chirper update --mode canary`.
+instead:
+
+```sh
+chirper update --mode canary
+```
+
+`--mode canary` only applies to that one command. Also set `Update Mode` to
+`Canary` in `chirper settings`, which the panel menu's update item uses, and
+keep passing `--mode canary` to later CLI updates. Otherwise the next update in
+release mode reinstalls the latest release, and the extension is `OUT OF DATE`
+again.
 
 ## GNOME Extension Shows Daemon Unavailable
 
