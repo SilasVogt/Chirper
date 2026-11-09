@@ -1,6 +1,6 @@
 # GNOME Shell Extension
 
-This extension targets GNOME Shell 50 and talks directly to the local
+This extension targets GNOME Shell 50 and 51 and talks directly to the local
 `chirper-daemon` Unix socket.
 
 It provides:

@@ -21,7 +21,7 @@ Required for the normal local dictation loop:
 
 Required for the GNOME extension and settings window:
 
-- GNOME Shell 50
+- GNOME Shell 50 or 51
 - `gnome-extensions`
 - `glib-compile-schemas`
 - `gjs`
@@ -59,6 +59,14 @@ Stable GNOME install:
 curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
   bash -s -- --ref v0.1.0 --gui gnome
 ```
+
+Release 0.1.0 supports GNOME Shell 50 only. On GNOME Shell 51, use the `main`
+install from the variants below until a newer release is out, and keep updates
+on canary (see
+[GNOME Extension Is Out Of Date](TROUBLESHOOTING.md#gnome-extension-is-out-of-date)).
+
+Run the one-line installers outside any Chirper checkout. Inside one, they
+build that checkout and ignore `--ref` and `--branch`.
 
 What it does:
 

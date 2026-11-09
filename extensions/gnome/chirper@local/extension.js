@@ -330,7 +330,7 @@ export default class ChirperExtension extends Extension {
             style_class: 'chirper-primary-icon',
         });
         const labelBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
         });
         this._primaryLabel = new St.Label({
@@ -436,7 +436,7 @@ export default class ChirperExtension extends Extension {
     _buildOverlay() {
         this._overlay = new St.BoxLayout({
             style_class: 'chirper-recording-overlay',
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             visible: false,
             reactive: false,
             opacity: 255,

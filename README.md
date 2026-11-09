@@ -18,8 +18,8 @@ This repo is early but usable for local testing on Linux. The current path is:
 - optional Codex CLI proofreading
 - clipboard insertion
 - daemon API for frontends
-- GNOME Shell 50 extension with recording controls, overlay, audio input
-  selection, and settings
+- GNOME Shell 50 and 51 extension with recording controls, overlay, audio
+  input selection, and settings
 - GTK/libadwaita onboarding app for checking dependencies, testing Whisper and
   formatter models, saving a recommended config, and cleaning up unused setup
   models
@@ -39,6 +39,18 @@ extension and GTK/libadwaita helper apps.
 curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/v0.1.0/scripts/install.sh | \
   bash -s -- --ref v0.1.0 --gui gnome
 ```
+
+Release 0.1.0 supports GNOME Shell 50 only. On GNOME Shell 51, install from
+`main` until a newer release is out, and keep updates on canary (see
+[GNOME Extension Is Out Of Date](docs/TROUBLESHOOTING.md#gnome-extension-is-out-of-date)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/install.sh | \
+  bash -s -- --branch main --gui gnome
+```
+
+Run it outside any Chirper checkout. Inside one, the installer builds that
+checkout instead of `main`.
 
 See [Install](docs/INSTALL.md) for dependency lists, install options, and first
 checks.
