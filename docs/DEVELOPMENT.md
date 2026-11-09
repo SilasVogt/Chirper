@@ -80,7 +80,7 @@ To inspect and select Ollama formatting models:
 ```sh
 cargo run -p chirper-cli -- ollama-list
 cargo run -p chirper-cli -- ai-format-current
-cargo run -p chirper-cli -- ollama-use granite4.1:8b
+cargo run -p chirper-cli -- ollama-use gemma4:e4b
 cargo run -p chirper-cli -- ai-format-logs 7
 cargo run -p chirper-cli -- ai-format-preload on
 cargo run -p chirper-cli -- formatter-use rules

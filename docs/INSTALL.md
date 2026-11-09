@@ -36,7 +36,8 @@ Required for whisper.cpp Vulkan builds:
 
 Optional:
 
-- Ollama, for local AI formatting with Granite presets
+- Ollama, for local AI formatting (Gemma 4 E4B by default; Ministral 3 8B and
+  Qwen 3.5 4B are the other onboarding choices)
 - Codex CLI, for OpenAI/Codex proofreading after the rules formatter
 - ROCm/HIP tooling, only if your distro/GPU stack supports the ROCm backend
 
@@ -164,9 +165,9 @@ Rules-based formatting works without Ollama. To enable local AI formatting with
 a selected Ollama model:
 
 ```sh
-ollama pull granite4.1:8b
+ollama pull gemma4:e4b
 chirper ollama-list
-chirper ollama-use granite4.1:8b
+chirper ollama-use gemma4:e4b
 ```
 
 The settings window exposes the same controls as an `AI Formatting` toggle plus

@@ -13,7 +13,7 @@ Gio._promisify(
 
 const WHISPER_MODELS = ['medium', 'large-v3-turbo', 'large-v3'];
 const RECOMMENDED_WHISPER_MODEL = 'large-v3-turbo';
-const OLLAMA_MODELS = ['granite4.1:3b', 'granite4.1:8b', 'olmo2:7b'];
+const OLLAMA_MODELS = ['gemma4:e4b', 'ministral-3:8b', 'qwen3.5:4b'];
 const CODEX_MODEL = 'gpt-5.4';
 const CODEX_EFFORT = 'medium';
 const EXTENSION_UUID = 'chirper@local';
@@ -382,23 +382,23 @@ function commandInfo(checks, name) {
 }
 
 function modelLabel(model) {
-    if (model === 'granite4.1:3b')
-        return 'Granite 3B';
-    if (model === 'granite4.1:8b')
-        return 'Granite 8B';
-    if (model === 'olmo2:7b')
-        return 'OLMo 2 7B';
+    if (model === 'qwen3.5:4b')
+        return 'Qwen 3.5 4B';
+    if (model === 'ministral-3:8b')
+        return 'Ministral 3 8B';
+    if (model === 'gemma4:e4b')
+        return 'Gemma 4 E4B';
 
     return model;
 }
 
 function modelNote(model) {
-    if (model === 'granite4.1:3b')
-        return 'Less smart model for devices with up to 8 GB of VRAM.';
-    if (model === 'granite4.1:8b')
-        return 'Pretty smart at text formatting, even with several tasks combined. Needs at least 12 GB of VRAM.';
-    if (model === 'olmo2:7b')
-        return 'Mostly smart model for around 8 GB of VRAM. Does a good job, but may miss things if several tasks are combined in one recording.';
+    if (model === 'gemma4:e4b')
+        return 'Recommended. The most accurate and fastest formatter in Chirper\'s tests, and it only needs about 3.5 GB of VRAM. 9.6 GB download.';
+    if (model === 'ministral-3:8b')
+        return 'Nearly as accurate. Needs about 6.5 GB of VRAM, and much more if Ollama is set to a long context length.';
+    if (model === 'qwen3.5:4b')
+        return 'Smallest download (3.4 GB) and about 3.5 GB of VRAM, but makes more mistakes than the other two.';
 
     return null;
 }
@@ -1655,7 +1655,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
         if (firstSuccessfulLocal)
             return parseFormatterId(firstSuccessfulLocal[0]).model;
 
-        const candidates = ['granite4.1:8b', 'granite4.1:3b', ...OLLAMA_MODELS];
+        const candidates = ['gemma4:e4b', 'ministral-3:8b', 'qwen3.5:4b', ...OLLAMA_MODELS];
         for (const model of new Set(candidates)) {
             if (ollamaInfo(this._checks, model)?.installed)
                 return model;

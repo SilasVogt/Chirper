@@ -15,7 +15,7 @@ Gio._promisify(
     'wait_finish'
 );
 
-const PREFERRED_OLLAMA_MODELS = new Set(['granite4.1:8b', 'gemma3:4b']);
+const PREFERRED_OLLAMA_MODELS = new Set(['gemma4:e4b', 'ministral-3:8b', 'qwen3.5:4b']);
 const MODE_OPTIONS = [
     ['auto', 'Auto'],
     ['standard', 'Standard'],

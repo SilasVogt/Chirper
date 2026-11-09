@@ -1042,9 +1042,9 @@ impl AiHardwareTier {
 
     pub fn ollama_model(self) -> &'static str {
         match self {
-            Self::Low => "granite4.1:3b",
-            Self::Medium => "granite4.1:8b",
-            Self::High => "granite4.1:8b",
+            Self::Low => "qwen3.5:4b",
+            Self::Medium => "ministral-3:8b",
+            Self::High => "gemma4:e4b",
         }
     }
 

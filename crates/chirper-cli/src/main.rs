@@ -55,7 +55,7 @@ const WHISPER_LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("ar", "Arabic"),
 ];
 const ONBOARDING_WHISPER_MODELS: &[&str] = &["medium", "large-v3-turbo", "large-v3"];
-const ONBOARDING_OLLAMA_MODELS: &[&str] = &["granite4.1:3b", "granite4.1:8b", "olmo2:7b"];
+const ONBOARDING_OLLAMA_MODELS: &[&str] = &["gemma4:e4b", "ministral-3:8b", "qwen3.5:4b"];
 
 fn main() {
     let mut args = std::env::args().skip(1);
