@@ -661,6 +661,13 @@ export default class ChirperExtension extends Extension {
                 return;
             }
 
+            if (response.formatting_error) {
+                Main.notify(
+                    'Chirper',
+                    `AI formatting failed, so the raw transcript was copied. ${shortLabel(response.formatting_error, 200)}`
+                );
+            }
+
             if (response.copied && this._settings.get_boolean(PASTE_AFTER_STOP_KEY))
                 await this._pasteIntoWindow(targetWindow);
         } catch (error) {

@@ -89,6 +89,7 @@ Fields:
 | `transcript` | Raw ASR transcript when available. |
 | `formatted` | Final text after formatting when available. |
 | `copied` | Whether final text was copied to the clipboard. |
+| `formatting_error` | Only present when the formatter failed. The raw transcript was used as `formatted` instead, so the dictation is not lost. |
 
 State names are lowercase strings: `idle`, `recording`, `transcribing`,
 `formatting`, `inserting`, and `error`.
@@ -126,6 +127,8 @@ A frontend may:
 - call `status` to paint its current UI
 - call `toggle`, `start_recording`, or `stop_recording` from hotkeys or buttons
 - show `state` and `message` directly in development UI
+- tell the user when `formatting_error` is present, because the pasted text is
+  the unformatted transcript
 - show `recording_path`, `transcript`, and `formatted` only in diagnostics UI
 
 A frontend should not:

@@ -4,12 +4,10 @@ use std::{
 };
 
 use chirper_core::{
+    ai_formatting::{self, FormatterReply, ProofreadingPrompt},
     ChirperConfig, ChirperError, ChirperResult, DictationMode, Formatter, Transcript,
     VocabularyEntry,
 };
-
-pub const AI_FORMATTING_PROMPT_TEMPLATE: &str = "\
-Your job is to fix transcription errors and human made mistakes. The user may misspeak and try to correct themselves or specify specific spellings of words and names. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. After applying a spoken instruction, remove the instruction words from the final text. Do not explain your actions. Return only the cleaned-up final text. This is the original transcript: {transcript}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaOptions {
@@ -33,10 +31,27 @@ pub struct OllamaModel {
     pub name: String,
 }
 
+/// One formatter call: the prompt that was sent, the model's raw reply, and
+/// the parsed reply or why the raw reply was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaFormatRun {
     pub prompt: String,
-    pub output: String,
+    /// The model's reply before parsing. Empty when the model was not called.
+    pub raw_output: String,
+    /// The cleaned-up text and the model's notes, or why `raw_output` was
+    /// rejected.
+    pub reply: ChirperResult<FormatterReply>,
+}
+
+impl OllamaFormatRun {
+    /// An empty transcript has nothing to clean up, so the model is skipped.
+    fn skipped(prompt: String) -> Self {
+        Self {
+            prompt,
+            raw_output: String::new(),
+            reply: Ok(FormatterReply::default()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +92,7 @@ impl OllamaFormatter {
         input: OllamaPromptInput,
     ) -> ChirperResult<String> {
         self.format_with_prompt_input_and_note(raw_transcript, preprocessed_text, mode, input, None)
+            .map(|reply| reply.text)
     }
 
     pub fn format_with_prompt_input_and_note(
@@ -86,9 +102,7 @@ impl OllamaFormatter {
         mode: DictationMode,
         input: OllamaPromptInput,
         prompt_note: Option<&str>,
-    ) -> ChirperResult<String> {
-        self.ensure_model_installed()?;
-
+    ) -> ChirperResult<FormatterReply> {
         let prompt = build_formatting_prompt(
             &raw_transcript.text,
             match input {
@@ -99,27 +113,77 @@ impl OllamaFormatter {
             &self.options.vocabulary,
             prompt_note,
         );
+        if raw_transcript.text.trim().is_empty() {
+            return Ok(FormatterReply::default());
+        }
         let input_text = match input {
             OllamaPromptInput::RawOnly => &raw_transcript.text,
             OllamaPromptInput::RawAndPreprocessed => preprocessed_text,
         };
 
-        self.format_custom_prompt(&prompt, input_text)
+        self.run_structured(prompt, input_text)?.reply
     }
 
+    /// Runs the regular app prompt on the raw transcript. This is what the
+    /// daemon does when Ollama formatting is enabled.
+    ///
+    /// Fails only when Ollama could not be run. A reply that breaks the JSON
+    /// contract comes back in [`OllamaFormatRun::reply`], so callers can still
+    /// log what the model said.
+    pub fn format_ai_prompt(&self, transcript: &Transcript) -> ChirperResult<OllamaFormatRun> {
+        let prompt = build_ai_formatting_prompt(&transcript.text);
+        if transcript.text.trim().is_empty() {
+            return Ok(OllamaFormatRun::skipped(prompt));
+        }
+
+        self.run_structured(prompt, &transcript.text)
+    }
+
+    /// Runs a caller-written prompt as is, without forcing the JSON reply
+    /// format. A reply that follows the JSON contract is still split into text
+    /// and notes; any other reply is used as the text.
     pub fn format_custom_prompt(
         &self,
         prompt: &str,
         non_empty_input: &str,
-    ) -> ChirperResult<String> {
+    ) -> ChirperResult<FormatterReply> {
+        let raw_output = self.run(prompt, None)?;
+
+        ai_formatting::lenient_reply("ollama", &raw_output, non_empty_input)
+    }
+
+    fn run_structured(&self, prompt: String, input: &str) -> ChirperResult<OllamaFormatRun> {
+        let raw_output = self.run(&prompt, Some(ai_formatting::REPLY_SCHEMA))?;
+        let reply = ai_formatting::checked_reply("ollama", &raw_output, input);
+
+        Ok(OllamaFormatRun {
+            prompt,
+            raw_output,
+            reply,
+        })
+    }
+
+    /// Sends one prompt to `ollama run` and returns the cleaned stdout.
+    /// `format` is passed to `--format`: a JSON schema or `json`.
+    fn run(&self, prompt: &str, format: Option<&str>) -> ChirperResult<String> {
         self.ensure_model_installed()?;
 
-        let mut child = Command::new(&self.options.command)
+        let mut command = Command::new(&self.options.command);
+        command
             .arg("run")
             .arg("--nowordwrap")
             .arg("--hidethinking")
+            // The notes field is the model's scratch space. Thinking only adds
+            // latency to a cleanup task, and models that cannot switch it off
+            // ignore this flag.
+            .arg("--think=false")
             .arg("--keepalive")
-            .arg("0")
+            .arg("0");
+        if let Some(format) = format {
+            command.arg("--format").arg(format);
+        }
+
+        let mut child = command
             .arg(&self.options.model)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -153,22 +217,7 @@ impl OllamaFormatter {
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let formatted = clean_model_output(&stdout);
-        if formatted.is_empty() && !non_empty_input.trim().is_empty() {
-            return Err(ChirperError::Formatting(
-                "ollama returned an empty formatter response".to_string(),
-            ));
-        }
-
-        Ok(formatted)
-    }
-
-    pub fn format_ai_prompt(&self, transcript: &Transcript) -> ChirperResult<OllamaFormatRun> {
-        let prompt = build_ai_formatting_prompt(&transcript.text);
-        let output = self.format_custom_prompt(&prompt, &transcript.text)?;
-
-        Ok(OllamaFormatRun { prompt, output })
+        Ok(clean_model_output(&String::from_utf8_lossy(&output.stdout)))
     }
 
     fn ensure_model_installed(&self) -> ChirperResult<()> {
@@ -185,7 +234,7 @@ impl OllamaFormatter {
 }
 
 pub fn build_ai_formatting_prompt(transcript: &str) -> String {
-    AI_FORMATTING_PROMPT_TEMPLATE.replace("{transcript}", transcript)
+    ai_formatting::app_prompt(transcript)
 }
 
 impl Formatter for OllamaFormatter {
@@ -237,97 +286,14 @@ fn build_formatting_prompt(
     vocabulary: &[VocabularyEntry],
     prompt_note: Option<&str>,
 ) -> String {
-    let vocabulary_section = if vocabulary.is_empty() {
-        "Preferred spellings: none configured.\n".to_string()
-    } else {
-        let mut section =
-            "Preferred spellings. Apply these exact spellings when the spoken phrase appears:\n"
-                .to_string();
-        for entry in vocabulary {
-            section.push_str(&format!(
-                "- \"{}\" => \"{}\"\n",
-                entry.spoken, entry.written
-            ));
-        }
-        section
-    };
-    let input_guidance = match preprocessed_text {
-        Some(_) => "\
-You receive both the raw transcript and Chirper's local preprocessed draft.
-The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
-Use the raw transcript as extra evidence for intended spelling and casing clues, such as \"spelled as one word in Pascal case\", \"pronounced ...\", \"capital p capital f\", \"all caps\", or letter-by-letter spellings.
-",
-        None => "\
-You receive only the raw transcript.
-You MUST apply clear spoken edit commands, spoken punctuation, spelling instructions, casing instructions, and preferred spellings yourself.
-Treat spoken instruction phrases as formatting instructions, not ordinary content.
-",
-    };
-    let input_section = match preprocessed_text {
-        Some(preprocessed_text) => format!(
-            "\
-Raw transcript:
-<<<
-{raw_text}
->>>
-
-Preprocessed draft:
-<<<
-{preprocessed_text}
->>>
-"
-        ),
-        None => format!(
-            "\
-Raw transcript:
-<<<
-{raw_text}
->>>
-"
-        ),
-    };
-    let extra_instruction_section = prompt_note
-        .map(str::trim)
-        .filter(|note| !note.is_empty())
-        .map(|note| {
-            format!(
-                "\
-Additional compare-run instructions:
-{note}
-"
-            )
-        })
-        .unwrap_or_default();
-
-    format!(
-        "\
-You format dictated speech into final text.
-
-Return only the final text. Do not explain, summarize, add facts, or wrap the result in quotes.
-You are a conservative proofreader for speech-to-text output, not a rewriting assistant.
-Preserve the speaker's meaning, wording, order, and all ordinary content words.
-Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
-{input_guidance}
-You MUST apply spoken spelling/casing instructions when they clearly modify a nearby name, handle, acronym, URL, email, version, or identifier.
-After applying a spoken instruction, remove the instruction words from the final text.
-Examples:
-- \"called pixel ferret tv that's capital p capital f capital t capital v\" -> \"called PixelFerretTV\"
-- \"j a n a pronounced yah nah\" -> \"Jana, pronounced Yah-nah\"
-- \"ops and things dot io slash episodes slash zero four two\" -> \"opsandthings.io/episodes/042\"
-Do not reintroduce text removed from the draft, do not output edit commands, do not duplicate corrected names, and do not undo existing corrections.
-If the text looks like code, shell input, Markdown, a URL, or an email address, preserve that structure.
-Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
-Do not add line breaks unless the input already contains them or the user clearly dictated a paragraph break.
-{vocabulary_section}
-{extra_instruction_section}
-If the input is empty or contains no speech, return an empty string.
-
-Mode: {mode:?}
-
-{input_section}
-
-Final text:"
-    )
+    ai_formatting::proofreading_prompt(ProofreadingPrompt {
+        raw_transcript: raw_text,
+        preprocessed_draft: preprocessed_text,
+        mode,
+        vocabulary,
+        prompt_note,
+        backend_rules: None,
+    })
 }
 
 fn clean_model_output(stdout: &str) -> String {
@@ -369,6 +335,21 @@ fn strip_terminal_controls(input: &str) -> String {
 mod tests {
     use super::*;
 
+    fn formatter_with_command(command: &str) -> OllamaFormatter {
+        OllamaFormatter::new(OllamaOptions {
+            command: command.to_string(),
+            model: "test-model".to_string(),
+            vocabulary: Vec::new(),
+        })
+    }
+
+    fn transcript(text: &str) -> Transcript {
+        Transcript {
+            text: text.to_string(),
+            language: None,
+        }
+    }
+
     #[test]
     fn parses_ollama_list_names() {
         let output = "\
@@ -406,11 +387,10 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         );
 
         assert!(prompt.contains("Mode: Standard"));
-        assert!(prompt.contains("Raw transcript:"));
+        assert!(prompt.contains("<raw_transcript>"));
         assert!(prompt.contains("hello comma world that's spelled as one word"));
-        assert!(prompt.contains("Preprocessed draft:"));
-        assert!(prompt.contains("HelloWorld"));
-        assert!(prompt.contains("Return only the final text"));
+        assert!(prompt.contains("<preprocessed_draft>\nHelloWorld\n</preprocessed_draft>"));
+        assert!(prompt.contains("Reply with one JSON object"));
         assert!(prompt.contains("authoritative baseline"));
         assert!(prompt.contains("capital p capital f"));
         assert!(prompt.contains("PixelFerretTV"));
@@ -430,17 +410,46 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         );
 
         assert!(prompt.contains("You receive only the raw transcript"));
-        assert!(prompt.contains("Raw transcript:"));
-        assert!(!prompt.contains("Preprocessed draft:"));
+        assert!(prompt.contains("<raw_transcript>"));
+        assert!(!prompt.contains("<preprocessed_draft>"));
     }
 
     #[test]
-    fn ai_prompt_uses_raw_transcript_placeholder() {
+    fn ai_prompt_wraps_raw_transcript() {
         let prompt = build_ai_formatting_prompt("hello comma world");
 
-        assert!(prompt.contains("fix transcription errors"));
-        assert!(prompt.contains("hello comma world"));
+        assert!(prompt.contains("Fix transcription errors"));
+        assert!(prompt.contains("<transcript>\nhello comma world\n</transcript>"));
+        assert!(prompt.contains("\"notes\""));
         assert!(!prompt.contains("{transcript}"));
+    }
+
+    #[test]
+    fn empty_transcript_skips_the_model() {
+        // The command does not exist, so any attempt to call Ollama would fail.
+        let formatter = formatter_with_command("/nonexistent/chirper-test-ollama");
+
+        let run = formatter.format_ai_prompt(&transcript("  \n")).unwrap();
+        assert_eq!(run.reply, Ok(FormatterReply::default()));
+        assert_eq!(run.raw_output, "");
+
+        let reply = formatter
+            .format_with_prompt_input_and_note(
+                &transcript(""),
+                "",
+                DictationMode::Auto,
+                OllamaPromptInput::RawAndPreprocessed,
+                None,
+            )
+            .unwrap();
+        assert_eq!(reply, FormatterReply::default());
+    }
+
+    #[test]
+    fn non_empty_transcript_still_calls_the_model() {
+        let formatter = formatter_with_command("/nonexistent/chirper-test-ollama");
+
+        assert!(formatter.format_ai_prompt(&transcript("hello")).is_err());
     }
 
     #[test]
@@ -448,5 +457,11 @@ qwen2.5:7b        845dbda0ea48    4.7 GB    yesterday
         assert_eq!(clean_model_output("Final text: Hello."), "Hello.");
         assert_eq!(clean_model_output("```\nHello.\n```"), "```\nHello.\n```");
         assert_eq!(clean_model_output("Hel\u{1b}[1D\u{1b}[Klo\r."), "Hello.");
+        assert_eq!(
+            clean_model_output(
+                "\u{1b}[?25l\u{1b}[?2026h{\"notes\":\"\",\"text\":\"Hi.\"}\u{1b}[?25h"
+            ),
+            "{\"notes\":\"\",\"text\":\"Hi.\"}"
+        );
     }
 }

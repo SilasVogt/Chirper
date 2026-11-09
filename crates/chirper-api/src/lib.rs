@@ -47,6 +47,9 @@ pub struct ApiResponse {
     pub transcript: Option<String>,
     pub formatted: Option<String>,
     pub copied: bool,
+    /// Set when the formatter failed and the raw transcript was used instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatting_error: Option<String>,
 }
 
 impl ApiResponse {
@@ -61,6 +64,7 @@ impl ApiResponse {
             transcript: None,
             formatted: None,
             copied: false,
+            formatting_error: None,
         }
     }
 
@@ -75,6 +79,7 @@ impl ApiResponse {
             transcript: None,
             formatted: None,
             copied: false,
+            formatting_error: None,
         }
     }
 }

@@ -1,3 +1,4 @@
+pub mod ai_formatting;
 pub mod config;
 pub mod error;
 pub mod state;

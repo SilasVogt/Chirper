@@ -173,10 +173,13 @@ The settings window exposes the same controls as an `AI Formatting` toggle plus
 an installed Ollama model selector. The onboarding app can run formatter
 comparisons and save the selected model during first setup. The daemon starts
 loading the selected Ollama model when recording starts, sends the raw transcript
-to the model after transcription, copies/pastes the model output, and asks
-Ollama to unload after formatting.
-Prompt logs are written under `~/.config/chirper/prompt-logs` by default and can
-be retained for off, 1 day, 1 week, or 30 days:
+to the model after transcription, copies/pastes the cleaned text from the
+model's JSON reply, and asks Ollama to unload after formatting. If formatting
+fails, Chirper copies/pastes the raw transcript instead of losing the dictation.
+Prompt logs are written under `~/.config/chirper/prompt-logs` by default. Each
+log has `prompt.txt`, `output.txt` (the pasted text), `notes.txt` (anything else
+the model said), and `raw-output.txt`. Logs can be retained for off, 1 day,
+1 week, or 30 days:
 
 ```sh
 chirper ai-format-current

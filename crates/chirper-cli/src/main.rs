@@ -18,9 +18,9 @@ use chirper_api::{send_request, ApiRequest, ApiResponse};
 use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
-    AsrEngine, AudioSource, ChirperConfig, ChirperResult, CodexProfileConfig, DictationMode,
-    FormatterBackend, GpuBackend, GuiProfile, ServiceCommand, TextInserter, TranscriptionProfile,
-    WorkflowState, WHISPER_MODEL_NAMES,
+    ai_formatting::FormatterReply, AsrEngine, AudioSource, ChirperConfig, ChirperResult,
+    CodexProfileConfig, DictationMode, FormatterBackend, GpuBackend, GuiProfile, ServiceCommand,
+    TextInserter, TranscriptionProfile, WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -413,6 +413,10 @@ fn print_api_response(response: &ApiResponse) {
 
     if let Some(formatted) = &response.formatted {
         println!("formatted: {formatted}");
+    }
+
+    if let Some(error) = &response.formatting_error {
+        println!("formatting_error: {error}");
     }
 
     println!("copied: {}", response.copied);
@@ -3731,6 +3735,7 @@ struct FormatCompareArgs {
     prompt_note: Option<String>,
     custom_prompts: Vec<NamedPromptTemplate>,
     include_default_prompt: bool,
+    app_prompt: bool,
     transcripts: Vec<NamedTranscript>,
     report_dir: Option<PathBuf>,
     progress_json: bool,
@@ -3760,6 +3765,8 @@ struct NamedTranscript {
 struct ComparePromptVariant {
     name: String,
     template: Option<String>,
+    /// Sends exactly what the daemon sends for the backend.
+    app: bool,
 }
 
 impl ComparePromptVariant {
@@ -3767,6 +3774,15 @@ impl ComparePromptVariant {
         Self {
             name: "chirper".to_string(),
             template: None,
+            app: false,
+        }
+    }
+
+    fn app() -> Self {
+        Self {
+            name: "app".to_string(),
+            template: None,
+            app: true,
         }
     }
 
@@ -3803,7 +3819,7 @@ fn format_compare(args: Vec<String>) {
 
     if args.text.is_empty() && args.transcripts.is_empty() {
         eprintln!(
-            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-service-tier TIER] [--codex-tier TIER] [--codex-config KEY=VALUE] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
+            "usage: chirper format-compare [--mode auto|standard|email|command|code] [--model MODEL] [--models MODEL1,MODEL2] [--codex] [--codex-model MODEL] [--codex-effort low|medium|high|xhigh] [--codex-service-tier TIER] [--codex-tier TIER] [--codex-config KEY=VALUE] [--codex-profile NAME] [--all-codex-profiles] [--prompt-input raw|both] [--prompt-note TEXT] [--custom-prompt NAME=TEXT] [--custom-prompt-file NAME=PATH] [--transcript NAME=TEXT] [--transcript-file NAME=PATH] [--include-default-prompt] [--app-prompt] [--no-preprocessor] [--report-dir PATH] [--json] [text]"
         );
         std::process::exit(1);
     }
@@ -3918,13 +3934,14 @@ fn format_compare(args: Vec<String>) {
                 }
 
                 let result = match result {
-                    Ok(output) => FormatCompareResult {
+                    Ok(reply) => FormatCompareResult {
                         name: run_name,
                         prompt_name: prompt_variant.name.clone(),
                         transcript_name: transcript_case.name.clone(),
                         elapsed_ms,
                         metrics,
-                        output: Some(output),
+                        output: Some(reply.text),
+                        notes: Some(reply.notes),
                         error: None,
                     },
                     Err(error) => FormatCompareResult {
@@ -3934,6 +3951,7 @@ fn format_compare(args: Vec<String>) {
                         elapsed_ms,
                         metrics,
                         output: None,
+                        notes: None,
                         error: Some(error.to_string()),
                     },
                 };
@@ -3995,13 +4013,14 @@ fn format_compare(args: Vec<String>) {
                 });
 
                 let result = match result {
-                    Ok(output) => FormatCompareResult {
+                    Ok(reply) => FormatCompareResult {
                         name: run_name,
                         prompt_name: prompt_variant.name.clone(),
                         transcript_name: transcript_case.name.clone(),
                         elapsed_ms,
                         metrics,
-                        output: Some(output),
+                        output: Some(reply.text),
+                        notes: Some(reply.notes),
                         error: None,
                     },
                     Err(error) => FormatCompareResult {
@@ -4011,6 +4030,7 @@ fn format_compare(args: Vec<String>) {
                         elapsed_ms,
                         metrics,
                         output: None,
+                        notes: None,
                         error: Some(error.to_string()),
                     },
                 };
@@ -4123,6 +4143,9 @@ fn format_compare(args: Vec<String>) {
         );
         if let Some(output) = result.output {
             println!("{output}");
+            if let Some(notes) = result.notes.filter(|notes| !notes.is_empty()) {
+                println!("notes: {notes}");
+            }
         } else if let Some(error) = result.error {
             println!("ERROR: {error}");
         }
@@ -4161,6 +4184,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
     let mut prompt_note = None;
     let mut custom_prompts = Vec::new();
     let mut include_default_prompt = false;
+    let mut app_prompt = false;
     let mut transcripts = Vec::new();
     let mut report_dir = None;
     let mut progress_json = false;
@@ -4343,6 +4367,9 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         } else if arg == "--include-default-prompt" || arg == "--with-default-prompt" {
             include_default_prompt = true;
             index += 1;
+        } else if arg == "--app-prompt" {
+            app_prompt = true;
+            index += 1;
         } else if let Some(value) = arg.strip_prefix("--transcript=") {
             transcripts.push(parse_named_transcript(value, transcripts.len() + 1));
             index += 1;
@@ -4403,6 +4430,7 @@ fn parse_format_compare_args(args: Vec<String>) -> FormatCompareArgs {
         prompt_note,
         custom_prompts,
         include_default_prompt,
+        app_prompt,
         transcripts,
         report_dir,
         progress_json,
@@ -4564,7 +4592,11 @@ fn resolve_compare_transcripts(args: &FormatCompareArgs) -> Vec<NamedTranscript>
 fn resolve_compare_prompt_variants(args: &FormatCompareArgs) -> Vec<ComparePromptVariant> {
     let mut variants = Vec::new();
 
-    if args.custom_prompts.is_empty() || args.include_default_prompt {
+    if args.app_prompt {
+        variants.push(ComparePromptVariant::app());
+    }
+
+    if (args.custom_prompts.is_empty() && !args.app_prompt) || args.include_default_prompt {
         variants.push(ComparePromptVariant::built_in());
     }
 
@@ -4574,6 +4606,7 @@ fn resolve_compare_prompt_variants(args: &FormatCompareArgs) -> Vec<ComparePromp
             .map(|prompt| ComparePromptVariant {
                 name: prompt.name.clone(),
                 template: Some(prompt.template.clone()),
+                app: false,
             }),
     );
 
@@ -4589,7 +4622,9 @@ fn format_compare_run_name(
 ) -> String {
     let mut name = model_name.to_string();
 
-    if prompt_variant_count > 1 || prompt_variant.is_custom() {
+    // The report viewer reads a two-part title under a non-default prompt as
+    // `model / prompt`, so named prompt variants always carry their name.
+    if prompt_variant_count > 1 || prompt_variant.is_custom() || prompt_variant.app {
         name.push_str(" / ");
         name.push_str(&prompt_variant.name);
     }
@@ -4609,7 +4644,13 @@ fn format_with_ollama_prompt_variant(
     config: &ChirperConfig,
     args: &FormatCompareArgs,
     prompt_variant: &ComparePromptVariant,
-) -> ChirperResult<String> {
+) -> ChirperResult<FormatterReply> {
+    if prompt_variant.app {
+        return formatter
+            .format_ai_prompt(transcript)
+            .and_then(|run| run.reply);
+    }
+
     if let Some(template) = prompt_variant.template.as_deref() {
         let prompt = render_custom_prompt(
             template,
@@ -4642,7 +4683,18 @@ fn format_with_codex_prompt_variant(
     config: &ChirperConfig,
     args: &FormatCompareArgs,
     prompt_variant: &ComparePromptVariant,
-) -> ChirperResult<String> {
+) -> ChirperResult<FormatterReply> {
+    if prompt_variant.app {
+        // The daemon sends Codex the raw transcript plus the rules draft.
+        return formatter.format_with_prompt_input_and_note(
+            transcript,
+            preformatted,
+            args.mode,
+            CodexPromptInput::RawAndPreprocessed,
+            None,
+        );
+    }
+
     if let Some(template) = prompt_variant.template.as_deref() {
         let prompt = render_custom_prompt(
             template,
@@ -4814,6 +4866,8 @@ struct FormatCompareResult {
     elapsed_ms: u128,
     metrics: ResourceMetrics,
     output: Option<String>,
+    /// The model's notes field. Never part of the output.
+    notes: Option<String>,
     error: Option<String>,
 }
 
@@ -4826,6 +4880,7 @@ fn format_compare_result_json(result: &FormatCompareResult) -> serde_json::Value
         "metrics": metrics_json(&result.metrics),
         "ok": result.error.is_none(),
         "output": result.output,
+        "notes": result.notes,
         "error": result.error,
     })
 }
@@ -5664,7 +5719,7 @@ fn dictate_test(seconds: Option<&str>) {
     println!("transcribing {}...", audio.path.display());
     let mode = configured_mode();
     let transcript = transcribe_audio(audio);
-    let formatted = format_text(&transcript.text, mode);
+    let formatted = format_dictation(&transcript.text, mode);
     println!("transcript: {}", transcript.text);
     println!("formatted: {formatted}");
     if formatted.trim().is_empty() {
@@ -5706,7 +5761,7 @@ fn toggle() {
         println!("transcribing...");
         let mode = configured_mode();
         let transcript = transcribe_audio(audio);
-        let formatted = format_text(&transcript.text, mode);
+        let formatted = format_dictation(&transcript.text, mode);
         println!("transcript: {}", transcript.text);
         println!("formatted: {formatted}");
         if formatted.trim().is_empty() {
@@ -5956,6 +6011,21 @@ fn format_text(text: &str, mode: DictationMode) -> String {
     }
 }
 
+/// Formats a dictation, falling back to the raw transcript when the formatter
+/// fails so the dictation is never lost.
+fn format_dictation(text: &str, mode: DictationMode) -> String {
+    let config = load_config_or_exit();
+    let transcript = chirper_core::Transcript {
+        text: text.to_string(),
+        language: None,
+    };
+
+    format_transcript_with_config(&config, &transcript, mode).unwrap_or_else(|error| {
+        eprintln!("formatting failed, using the raw transcript: {error}");
+        text.to_string()
+    })
+}
+
 fn format_transcript_with_config(
     config: &ChirperConfig,
     transcript: &chirper_core::Transcript,
@@ -6168,5 +6238,86 @@ mod tests {
         let newer = parse_release_version_tag("v1.10.0").unwrap();
 
         assert!(newer > older);
+    }
+
+    fn compare_args() -> FormatCompareArgs {
+        FormatCompareArgs {
+            mode: DictationMode::Auto,
+            models: Vec::new(),
+            include_ollama: true,
+            force_all_ollama: false,
+            include_codex_current: false,
+            codex_profiles: Vec::new(),
+            all_codex_profiles: false,
+            codex_model: None,
+            codex_reasoning_effort: None,
+            codex_service_tier: None,
+            codex_config_overrides: Vec::new(),
+            include_rules: true,
+            keep_loaded: false,
+            prompt_input: ComparePromptInput::RawAndPreprocessed,
+            prompt_note: None,
+            custom_prompts: Vec::new(),
+            include_default_prompt: false,
+            app_prompt: false,
+            transcripts: Vec::new(),
+            report_dir: None,
+            progress_json: false,
+            json: false,
+            text: "hello".to_string(),
+        }
+    }
+
+    fn variant_names(args: &FormatCompareArgs) -> Vec<String> {
+        resolve_compare_prompt_variants(args)
+            .into_iter()
+            .map(|variant| variant.name)
+            .collect()
+    }
+
+    #[test]
+    fn app_prompt_flag_selects_the_daemon_prompt() {
+        let mut args = compare_args();
+        assert_eq!(variant_names(&args), vec!["chirper"]);
+
+        args.app_prompt = true;
+        assert_eq!(variant_names(&args), vec!["app"]);
+
+        args.include_default_prompt = true;
+        assert_eq!(variant_names(&args), vec!["app", "chirper"]);
+
+        args.include_default_prompt = false;
+        args.custom_prompts.push(NamedPromptTemplate {
+            name: "strict".to_string(),
+            template: "Return only text.".to_string(),
+        });
+        assert_eq!(variant_names(&args), vec!["app", "strict"]);
+    }
+
+    #[test]
+    fn app_prompt_run_names_carry_the_prompt_name() {
+        let transcript = NamedTranscript {
+            name: "case-a".to_string(),
+            text: "hello".to_string(),
+        };
+
+        assert_eq!(
+            format_compare_run_name("model", &ComparePromptVariant::app(), 1, &transcript, 2),
+            "model / app / case-a"
+        );
+        assert_eq!(
+            format_compare_run_name("model", &ComparePromptVariant::app(), 1, &transcript, 1),
+            "model / app"
+        );
+        assert_eq!(
+            format_compare_run_name(
+                "model",
+                &ComparePromptVariant::built_in(),
+                1,
+                &transcript,
+                1
+            ),
+            "model"
+        );
     }
 }

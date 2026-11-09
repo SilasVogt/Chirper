@@ -1,14 +1,19 @@
 use std::{
     env, fs,
-    path::PathBuf,
+    io::Write,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chirper_core::{
+    ai_formatting::{self, FormatterReply, ProofreadingPrompt},
     ChirperConfig, ChirperError, ChirperResult, CodexProfileConfig, DictationMode, Formatter,
     Transcript, VocabularyEntry,
 };
+
+const CODEX_RULES: &str = "\
+You run inside Codex, but this is only a text cleanup task: do not inspect files, do not run commands, and do not use tools. Do not mention Codex.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexPromptInput {
@@ -107,6 +112,7 @@ impl CodexFormatter {
         input: CodexPromptInput,
     ) -> ChirperResult<String> {
         self.format_with_prompt_input_and_note(raw_transcript, preprocessed_text, mode, input, None)
+            .map(|reply| reply.text)
     }
 
     pub fn format_with_prompt_input_and_note(
@@ -116,7 +122,10 @@ impl CodexFormatter {
         mode: DictationMode,
         input: CodexPromptInput,
         prompt_note: Option<&str>,
-    ) -> ChirperResult<String> {
+    ) -> ChirperResult<FormatterReply> {
+        if raw_transcript.text.trim().is_empty() {
+            return Ok(FormatterReply::default());
+        }
         let prompt = build_formatting_prompt(
             &raw_transcript.text,
             match input {
@@ -132,15 +141,43 @@ impl CodexFormatter {
             CodexPromptInput::RawAndPreprocessed => preprocessed_text,
         };
 
-        self.format_custom_prompt(&prompt, input_text)
+        let final_message = self.run(&prompt, Some(ai_formatting::REPLY_SCHEMA))?;
+
+        ai_formatting::checked_reply("codex", &final_message, input_text)
     }
 
+    /// Runs a caller-written prompt as is, without forcing the JSON reply
+    /// format. A reply that follows the JSON contract is still split into text
+    /// and notes; any other reply is used as the text.
     pub fn format_custom_prompt(
         &self,
         prompt: &str,
         non_empty_input: &str,
-    ) -> ChirperResult<String> {
-        let output_path = codex_output_path();
+    ) -> ChirperResult<FormatterReply> {
+        let final_message = self.run(prompt, None)?;
+
+        ai_formatting::lenient_reply("codex", &final_message, non_empty_input)
+    }
+
+    /// Runs `codex exec` once and returns the cleaned final message.
+    /// `output_schema` is written to a temporary file for `--output-schema`.
+    fn run(&self, prompt: &str, output_schema: Option<&str>) -> ChirperResult<String> {
+        let output_path = codex_temp_path("txt");
+        // Create the reply file first so a planted symlink at that path makes
+        // this fail instead of being followed when Codex writes the reply.
+        write_new_file(&output_path, "").map_err(|source| {
+            ChirperError::Formatting(format!(
+                "failed to create Codex output file {}: {source}",
+                output_path.display()
+            ))
+        })?;
+        let schema_path = match output_schema.map(write_schema_file).transpose() {
+            Ok(schema_path) => schema_path,
+            Err(error) => {
+                let _ = fs::remove_file(&output_path);
+                return Err(error);
+            }
+        };
         let work_dir = env::temp_dir();
         let mut command = Command::new(&self.options.command);
 
@@ -159,6 +196,10 @@ impl CodexFormatter {
             .arg(&work_dir)
             .arg("-o")
             .arg(&output_path);
+
+        if let Some(schema_path) = &schema_path {
+            command.arg("--output-schema").arg(schema_path);
+        }
 
         if let Some(model) = self
             .options
@@ -212,13 +253,17 @@ impl CodexFormatter {
             .env("NO_COLOR", "1")
             .env("TERM", "xterm-256color")
             .stdin(Stdio::null())
-            .output()
-            .map_err(|source| {
-                ChirperError::Formatting(format!(
-                    "failed to run `{}`: {source}",
-                    self.options.command
-                ))
-            })?;
+            .output();
+        if let Some(schema_path) = &schema_path {
+            let _ = fs::remove_file(schema_path);
+        }
+        let output = output.map_err(|source| {
+            let _ = fs::remove_file(&output_path);
+            ChirperError::Formatting(format!(
+                "failed to run `{}`: {source}",
+                self.options.command
+            ))
+        })?;
 
         if !output.status.success() {
             let _ = fs::remove_file(&output_path);
@@ -231,17 +276,12 @@ impl CodexFormatter {
         }
 
         let final_message = fs::read_to_string(&output_path)
-            .unwrap_or_else(|_| String::from_utf8_lossy(&output.stdout).to_string());
+            .ok()
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or_else(|| String::from_utf8_lossy(&output.stdout).to_string());
         let _ = fs::remove_file(&output_path);
-        let formatted = clean_model_output(&final_message);
 
-        if formatted.is_empty() && !non_empty_input.trim().is_empty() {
-            return Err(ChirperError::Formatting(
-                "codex returned an empty formatter response".to_string(),
-            ));
-        }
-
-        Ok(formatted)
+        Ok(clean_model_output(&final_message))
     }
 }
 
@@ -251,16 +291,38 @@ impl Formatter for CodexFormatter {
     }
 }
 
-fn codex_output_path() -> PathBuf {
+fn codex_temp_path(extension: &str) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
 
     env::temp_dir().join(format!(
-        "chirper-codex-{}-{timestamp}.txt",
+        "chirper-codex-{}-{timestamp}.{extension}",
         std::process::id()
     ))
+}
+
+fn write_schema_file(schema: &str) -> ChirperResult<PathBuf> {
+    let path = codex_temp_path("schema.json");
+    write_new_file(&path, schema).map_err(|source| {
+        ChirperError::Formatting(format!(
+            "failed to write Codex output schema {}: {source}",
+            path.display()
+        ))
+    })?;
+
+    Ok(path)
+}
+
+/// Refuses to follow or overwrite an existing path, such as a planted symlink.
+fn write_new_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+
+    file.write_all(contents.as_bytes())
 }
 
 fn stdout_context(stdout: &[u8]) -> String {
@@ -281,97 +343,14 @@ fn build_formatting_prompt(
     vocabulary: &[VocabularyEntry],
     prompt_note: Option<&str>,
 ) -> String {
-    let vocabulary_section = if vocabulary.is_empty() {
-        "Preferred spellings: none configured.\n".to_string()
-    } else {
-        let mut section =
-            "Preferred spellings. Apply these exact spellings when the spoken phrase appears:\n"
-                .to_string();
-        for entry in vocabulary {
-            section.push_str(&format!(
-                "- \"{}\" => \"{}\"\n",
-                entry.spoken, entry.written
-            ));
-        }
-        section
-    };
-    let input_guidance = match preprocessed_text {
-        Some(_) => "\
-You receive both the raw transcript and Chirper's local preprocessed draft.
-The preprocessed draft is the authoritative baseline and has already applied edit commands, spoken punctuation, casing commands, and preferred spellings.
-Use the raw transcript as extra evidence for intended spelling and casing clues, such as \"spelled as one word in Pascal case\", \"pronounced ...\", \"capital p capital f\", \"all caps\", or letter-by-letter spellings.
-",
-        None => "\
-You receive only the raw transcript.
-You MUST apply clear spoken edit commands, spoken punctuation, spelling instructions, casing instructions, and preferred spellings yourself.
-Treat spoken instruction phrases as formatting instructions, not ordinary content.
-",
-    };
-    let input_section = match preprocessed_text {
-        Some(preprocessed_text) => format!(
-            "\
-Raw transcript:
-<<<
-{raw_text}
->>>
-
-Preprocessed draft:
-<<<
-{preprocessed_text}
->>>
-"
-        ),
-        None => format!(
-            "\
-Raw transcript:
-<<<
-{raw_text}
->>>
-"
-        ),
-    };
-    let extra_instruction_section = prompt_note
-        .map(str::trim)
-        .filter(|note| !note.is_empty())
-        .map(|note| {
-            format!(
-                "\
-Additional compare-run instructions:
-{note}
-"
-            )
-        })
-        .unwrap_or_default();
-
-    format!(
-        "\
-You are a dictation proofreader inside Chirper.
-
-Return only the final text. Do not explain, summarize, add facts, mention Codex, or wrap the result in quotes.
-Do not inspect files, do not run commands, and do not use tools. This is only a text cleanup task.
-Preserve the speaker's meaning, wording, order, and ordinary content words.
-Fix only likely transcription errors, casing, punctuation, spacing, and paragraph breaks.
-{input_guidance}
-You MUST apply spoken spelling/casing instructions when they clearly modify a nearby name, handle, acronym, URL, email, version, or identifier.
-After applying a spoken instruction, remove the instruction words from the final text.
-Examples:
-- \"called pixel ferret tv that's capital p capital f capital t capital v\" -> \"called PixelFerretTV\"
-- \"j a n a pronounced yah nah\" -> \"Jana, pronounced Yah-nah\"
-- \"ops and things dot io slash episodes slash zero four two\" -> \"opsandthings.io/episodes/042\"
-Do not reintroduce text removed from the draft, do not output edit commands, do not duplicate corrected names, and do not undo existing corrections.
-If the text looks like code, shell input, Markdown, a URL, or an email address, preserve that structure.
-Preserve existing camelCase and PascalCase identifiers exactly, including product, channel, and project names.
-Do not add line breaks unless the input already contains them or the user clearly dictated a paragraph break.
-{vocabulary_section}
-{extra_instruction_section}
-If the input is empty or contains no speech, return an empty string.
-
-Mode: {mode:?}
-
-{input_section}
-
-Final text:"
-    )
+    ai_formatting::proofreading_prompt(ProofreadingPrompt {
+        raw_transcript: raw_text,
+        preprocessed_draft: preprocessed_text,
+        mode,
+        vocabulary,
+        prompt_note,
+        backend_rules: Some(CODEX_RULES),
+    })
 }
 
 fn clean_model_output(stdout: &str) -> String {
@@ -411,7 +390,13 @@ fn strip_terminal_controls(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// Tests that create Codex temp files share one process id prefix, so they
+    /// take turns to keep file counts stable.
+    static TEMP_FILES: Mutex<()> = Mutex::new(());
 
     #[test]
     fn options_from_named_profile_prefer_profile_values() {
@@ -449,8 +434,78 @@ mod tests {
             build_formatting_prompt("hello comma world", None, DictationMode::Auto, &[], None);
 
         assert!(prompt.contains("You receive only the raw transcript"));
-        assert!(!prompt.contains("Preprocessed draft:"));
-        assert!(prompt.contains("Do not inspect files"));
+        assert!(!prompt.contains("<preprocessed_draft>"));
+        assert!(prompt.contains("do not inspect files"));
+        assert!(prompt.contains("Reply with one JSON object"));
+    }
+
+    #[test]
+    fn empty_transcript_skips_codex() {
+        let formatter = CodexFormatter::new(CodexOptions {
+            command: "/nonexistent/chirper-test-codex".to_string(),
+            model: None,
+            profile: None,
+            reasoning_effort: None,
+            service_tier: None,
+            config_overrides: Vec::new(),
+            vocabulary: Vec::new(),
+        });
+        let transcript = Transcript {
+            text: " ".to_string(),
+            language: None,
+        };
+
+        let reply = formatter
+            .format_with_prompt_input_and_note(
+                &transcript,
+                "",
+                DictationMode::Auto,
+                CodexPromptInput::RawAndPreprocessed,
+                None,
+            )
+            .unwrap();
+        assert_eq!(reply, FormatterReply::default());
+    }
+
+    #[test]
+    fn missing_codex_cleans_up_its_temp_files() {
+        let _guard = TEMP_FILES.lock().unwrap_or_else(|error| error.into_inner());
+        let formatter = CodexFormatter::new(CodexOptions {
+            command: "/nonexistent/chirper-test-codex".to_string(),
+            model: None,
+            profile: None,
+            reasoning_effort: None,
+            service_tier: None,
+            config_overrides: Vec::new(),
+            vocabulary: Vec::new(),
+        });
+        let prefix = format!("chirper-codex-{}-", std::process::id());
+        let leftovers = || {
+            fs::read_dir(env::temp_dir())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                .count()
+        };
+        let before = leftovers();
+
+        assert!(formatter
+            .run("hello", Some(ai_formatting::REPLY_SCHEMA))
+            .is_err());
+        assert_eq!(leftovers(), before);
+    }
+
+    #[test]
+    fn schema_file_refuses_existing_paths() {
+        let _guard = TEMP_FILES.lock().unwrap_or_else(|error| error.into_inner());
+        let path = write_schema_file(ai_formatting::REPLY_SCHEMA).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            ai_formatting::REPLY_SCHEMA
+        );
+        assert!(write_new_file(&path, "{}").is_err());
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]

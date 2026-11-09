@@ -29,7 +29,6 @@ const SHORTCUT_OPTIONS = [
     '<Ctrl><Shift>space',
     'custom',
 ];
-const EXTENSION_FORMATTING_PROMPT = 'extension=Your job is to fix transcription errors and human made mistakes. the user may misspeak and try to correct themselves or specify specific spellings of words and names. Return only the cleaned-up final text. Apply spoken edit commands, punctuation, casing, spelling, URLs, emails, basic markdown and identifiers. Do not explain your actions.\n\n{raw_transcript}';
 const TEST_PROMPT = `Hello Chirper. I need to write down accent-friendly words. This is a bullet point list with title Accent Friendly Words: water, tomato, schedule, data, router, aluminium, privacy. End of list.
 
 Please write an email to Maya comma subject colon quarterly update period The meeting moved to Thursday at 9:30 AM comma the budget is $12,450 comma and the website is chirper dot local slash launch period
@@ -1346,10 +1345,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
                         '--json',
                         '--model',
                         model,
-                        '--prompt-input',
-                        'raw',
-                        '--custom-prompt',
-                        EXTENSION_FORMATTING_PROMPT,
+                        '--app-prompt',
                         whisperResult.transcript,
                     ]);
                     const result = data.results?.[0] ?? {};
@@ -1378,10 +1374,7 @@ const OnboardingWindow = GObject.registerClass(class OnboardingWindow extends Ad
                         CODEX_MODEL,
                         '--codex-effort',
                         CODEX_EFFORT,
-                        '--prompt-input',
-                        'raw',
-                        '--custom-prompt',
-                        EXTENSION_FORMATTING_PROMPT,
+                        '--app-prompt',
                         whisperResult.transcript,
                     ]);
                     const result = data.results?.[0] ?? {};

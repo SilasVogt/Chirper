@@ -175,6 +175,19 @@ Use a larger Whisper model when ASR mistakes are the root problem:
 chirper model-download medium --select
 ```
 
+If the AI formatter answers a dictated question or carries out a dictated
+request instead of cleaning it up, open the newest folder in
+`~/.config/chirper/prompt-logs` (Ollama formatting only). `notes.txt` shows what
+the model thought it was doing, `raw-output.txt` has its full reply, and
+`metadata.json` has an `error` when the reply was rejected. When formatting
+fails, Chirper pastes the raw transcript and the GNOME extension shows an
+"AI formatting failed" notification with the reason. Try other models on the
+same transcript with the daemon's prompt:
+
+```sh
+chirper format-compare --app-prompt --models MODEL1,MODEL2 "your transcript"
+```
+
 Use `chirper format-compare` to test local Ollama models before making one the
 default formatter. For side-by-side prompt testing:
 
