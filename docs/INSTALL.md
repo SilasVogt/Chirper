@@ -65,6 +65,9 @@ install from the variants below until a newer release is out, and keep updates
 on canary (see
 [GNOME Extension Is Out Of Date](TROUBLESHOOTING.md#gnome-extension-is-out-of-date)).
 
+Run the one-line installers outside any Chirper checkout. Inside one, they
+build that checkout and ignore `--ref` and `--branch`.
+
 What it does:
 
 - clones or updates the repo at `~/.local/share/chirper/source`

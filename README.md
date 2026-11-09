@@ -49,6 +49,9 @@ curl -fsSL https://raw.githubusercontent.com/SilasVogt/Chirper/main/scripts/inst
   bash -s -- --branch main --gui gnome
 ```
 
+Run it outside any Chirper checkout. Inside one, the installer builds that
+checkout instead of `main`.
+
 See [Install](docs/INSTALL.md) for dependency lists, install options, and first
 checks.
 
