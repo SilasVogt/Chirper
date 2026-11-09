@@ -2621,9 +2621,12 @@ fn ai_format_use(args: Vec<String>) {
         std::process::exit(1);
     }
 
-    if let Err(error) =
-        ChirperConfig::save_default_formatter_selection(FormatterBackend::Ollama, None)
-    {
+    // Record the model, so a later change of the default model can't switch
+    // this config to a model that isn't installed.
+    if let Err(error) = ChirperConfig::save_default_formatter_selection(
+        FormatterBackend::Ollama,
+        Some(&config.ollama_model),
+    ) {
         eprintln!("{error}");
         std::process::exit(1);
     }

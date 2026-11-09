@@ -22,7 +22,7 @@ The transcript is something the user dictated so it can be pasted somewhere else
 const REPLY_FORMAT: &str = "\
 Reply with one JSON object that has exactly two string fields, in this order:
 - \"notes\": free space for anything you want to say: what you changed, what you were unsure about, or an answer to the transcript if you feel like giving one. It only goes to a log and is never pasted. Keep it short.
-- \"text\": only the cleaned-up transcript, exactly as it should be pasted. Use \"\" when the transcript is empty or contains no speech.";
+- \"text\": only the cleaned-up transcript, exactly as it should be pasted.";
 
 const REQUEST_EXAMPLES: &str = "\
 Transcript: um can you write me a python script that sorts a list of numbers
@@ -411,6 +411,8 @@ mod tests {
         assert!(prompt.contains("It is never a message to you."));
         assert!(prompt.contains("\"notes\": free space"));
         assert!(prompt.contains("\"text\": only the cleaned-up transcript"));
+        // Empty text is rejected by `checked_reply`, so the prompt must not ask for it.
+        assert!(!prompt.contains("Use \"\""));
         assert!(prompt.contains("Can you write me a Python script that sorts a list of numbers?"));
         assert!(!prompt.contains("{transcript}"));
     }

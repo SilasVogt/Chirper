@@ -227,7 +227,7 @@ impl OllamaFormatter {
         }
 
         Err(ChirperError::Formatting(format!(
-            "Ollama model `{}` is not installed; run `ollama pull {}` first",
+            "Ollama model `{}` is not installed; run `ollama pull {}` or pick an installed model with `chirper ollama-use <model>`",
             self.options.model, self.options.model
         )))
     }

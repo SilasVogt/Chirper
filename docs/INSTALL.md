@@ -170,6 +170,13 @@ chirper ollama-list
 chirper ollama-use gemma4:e4b
 ```
 
+The default model used to be `granite4.1:8b`. A config that never picked a
+model, for example because AI formatting was only turned on with
+`chirper ai-format-use on`, now uses `gemma4:e4b`. If that model is not pulled,
+dictations paste the raw transcript and the notification says to run
+`ollama pull gemma4:e4b` or pick an installed model with `chirper ollama-use`.
+`chirper ai-format-use on` now saves the model it enabled.
+
 The settings window exposes the same controls as an `AI Formatting` toggle plus
 an installed Ollama model selector. The onboarding app can run formatter
 comparisons and save the selected model during first setup. The daemon starts
