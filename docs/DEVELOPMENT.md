@@ -80,7 +80,7 @@ To inspect and select Ollama formatting models:
 ```sh
 cargo run -p chirper-cli -- ollama-list
 cargo run -p chirper-cli -- ai-format-current
-cargo run -p chirper-cli -- ollama-use granite4.1:8b
+cargo run -p chirper-cli -- ollama-use gemma4:e4b
 cargo run -p chirper-cli -- ai-format-logs 7
 cargo run -p chirper-cli -- ai-format-preload on
 cargo run -p chirper-cli -- formatter-use rules
@@ -93,7 +93,7 @@ returns to local rules.
 When enabled, the daemon sends the raw transcript to the selected Ollama model,
 uses the model output as the copied/pasted text, writes prompt/input/output logs
 under `~/.config/chirper/prompt-logs`, and prunes those logs according to
-`format_log_retention_days`.
+`format_log_retention_days` (a number of days, `0` for no logs, or `"forever"`).
 
 To inspect and select Codex CLI formatting:
 
@@ -113,8 +113,16 @@ settings. `codex-profile-add` saves named comparison profiles under
 which the Codex UI labels as Fast.
 
 The daemon's Ollama formatter uses the current raw-transcript prompt directly.
-The compare tools can still test raw-only, rules-preprocessed, and custom prompt
-variants without changing daemon configuration.
+`format-compare --app-prompt` runs exactly that prompt; for Codex it runs the
+daemon's raw plus preprocessed proofreading prompt. The compare tools can still
+test raw-only, rules-preprocessed, and custom prompt variants without changing
+daemon configuration.
+
+Built-in prompts ask for a JSON reply, `{"notes": "...", "text": "..."}`, and
+enforce it with Ollama's `--format` schema and Codex's `--output-schema`. Only
+`text` is used as output. `notes` is where models put commentary or answers to
+dictated questions instead of the output. The shared prompt text, schema, and
+parser live in `crates/chirper-core/src/ai_formatting.rs`.
 
 To compare formatter output across all installed Ollama models without changing
 the saved daemon configuration:
@@ -123,6 +131,7 @@ the saved daemon configuration:
 cargo run -p chirper-cli -- format-compare "hello comma world"
 cargo run -p chirper-cli -- format-compare --models gemma3:4b,gemma4:latest "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-input raw "hello comma world"
+cargo run -p chirper-cli -- format-compare --app-prompt "hello comma world"
 cargo run -p chirper-cli -- format-compare --prompt-note "Prefer exact casing instructions." "hello comma world"
 cargo run -p chirper-cli -- format-compare --custom-prompt "strict=Return only corrected final text." "hello comma world"
 cargo run -p chirper-cli -- format-compare --custom-prompt-file strict=./prompt.txt --transcript "case-a=hello comma world" --transcript-file case-b=./transcript.txt
@@ -150,6 +159,10 @@ templates. If custom prompts are provided, Chirper runs only those prompts unles
 `--include-default-prompt` is passed. Prompt templates may contain
 `{transcript}`, `{preprocessed}`, `{mode}`, and `{vocabulary}` placeholders; if
 no transcript placeholder is present, Chirper appends the transcript block.
+Custom prompts are sent as written. If the reply is a JSON object with a `text`
+field, Chirper uses its `text` and `notes`; otherwise the whole reply is the
+output. Text output prints each result's notes after its output, and `--json`
+includes them as `notes`.
 Use `--transcript` and `--transcript-file` to add named transcript cases. The
 compare matrix is every selected model or Codex profile times every selected
 prompt times every transcript case.

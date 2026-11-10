@@ -54,13 +54,14 @@ whisper_language = "auto"
 # Ollama is optional. Use `chirper ollama-list`, `chirper ollama-use <model>`,
 # and `chirper formatter-use ollama <model>` to select a local model.
 ollama_command = "ollama"
-ollama_model = "granite4.1:8b"
+ollama_model = "gemma4:e4b"
 
 # If true, the daemon starts loading the selected Ollama model when recording
 # starts. The formatting call asks Ollama to unload after generation.
 ollama_preload_on_recording = true
 
-# Prompt logs are written under ~/.config/chirper/prompt-logs. Use 0 to disable.
+# Prompt logs are written under ~/.config/chirper/prompt-logs and deleted after
+# this many days. Use 0 to turn them off, or "forever" to never delete them.
 format_log_retention_days = 7
 
 # Codex CLI is optional. It uses your installed `codex` auth/config and runs

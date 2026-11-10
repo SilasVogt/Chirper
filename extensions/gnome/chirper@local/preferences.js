@@ -28,6 +28,7 @@ const AI_LOG_RETENTION_OPTIONS = [
     ['1', '1 Day', 'Delete prompt logs older than one day.'],
     ['7', '1 Week', 'Delete prompt logs older than one week.'],
     ['30', '30 Days', 'Delete prompt logs older than 30 days.'],
+    ['forever', 'Forever', 'Keep prompt logs until you delete them.'],
 ];
 
 export function loadExtensionSettings(extensionPath) {
@@ -905,6 +906,9 @@ class ChirperPreferencesBuilder {
     }
 
     _formatLogDays(days) {
+        if (days === 'forever')
+            return 'forever';
+
         const numeric = Number(days);
         if (!Number.isFinite(numeric) || numeric <= 0)
             return 'off';

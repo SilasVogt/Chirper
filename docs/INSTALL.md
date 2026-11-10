@@ -36,7 +36,8 @@ Required for whisper.cpp Vulkan builds:
 
 Optional:
 
-- Ollama, for local AI formatting with Granite presets
+- Ollama, for local AI formatting (Gemma 4 E4B by default; Ministral 3 8B and
+  Qwen 3.5 4B are the other onboarding choices)
 - Codex CLI, for OpenAI/Codex proofreading after the rules formatter
 - ROCm/HIP tooling, only if your distro/GPU stack supports the ROCm backend
 
@@ -172,23 +173,33 @@ Rules-based formatting works without Ollama. To enable local AI formatting with
 a selected Ollama model:
 
 ```sh
-ollama pull granite4.1:8b
+ollama pull gemma4:e4b
 chirper ollama-list
-chirper ollama-use granite4.1:8b
+chirper ollama-use gemma4:e4b
 ```
+
+The default model used to be `granite4.1:8b`. A config that never picked a
+model, for example because AI formatting was only turned on with
+`chirper ai-format-use on`, now uses `gemma4:e4b`. If that model is not pulled,
+dictations paste the raw transcript and the notification says to run
+`ollama pull gemma4:e4b` or pick an installed model with `chirper ollama-use`.
+`chirper ai-format-use on` now saves the model it enabled.
 
 The settings window exposes the same controls as an `AI Formatting` toggle plus
 an installed Ollama model selector. The onboarding app can run formatter
 comparisons and save the selected model during first setup. The daemon starts
 loading the selected Ollama model when recording starts, sends the raw transcript
-to the model after transcription, copies/pastes the model output, and asks
-Ollama to unload after formatting.
-Prompt logs are written under `~/.config/chirper/prompt-logs` by default and can
-be retained for off, 1 day, 1 week, or 30 days:
+to the model after transcription, copies/pastes the cleaned text from the
+model's JSON reply, and asks Ollama to unload after formatting. If formatting
+fails, Chirper copies/pastes the raw transcript instead of losing the dictation.
+Prompt logs are written under `~/.config/chirper/prompt-logs` by default. Each
+log has `prompt.txt`, `output.txt` (the pasted text), `notes.txt` (anything else
+the model said), and `raw-output.txt`. Logs are deleted after a number of days
+(7 by default), or kept forever, or turned off:
 
 ```sh
 chirper ai-format-current
-chirper ai-format-logs 7
+chirper ai-format-logs 7        # or 0 / off, 1, 30, forever
 chirper ai-format-preload on
 ```
 

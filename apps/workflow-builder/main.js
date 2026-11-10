@@ -18,7 +18,7 @@ const INPUT_OPTIONS = [
 const DEFAULT_PROMPTS = {
     fix: {
         name: 'Fix transcription errors',
-        model: 'granite4.1:3b',
+        model: 'qwen3.5:4b',
         inputMode: 'transcript',
         prompt: `You are a transcript cleanup stage.
 Fix likely speech-to-text errors while preserving the speaker's words and intent.
@@ -30,7 +30,7 @@ Transcript:
     },
     search: {
         name: 'Find vocabulary lookups',
-        model: 'granite4.1:3b',
+        model: 'qwen3.5:4b',
         inputMode: 'previous',
         prompt: `You inspect a transcript for words or names that may need contextual vocabulary lookup.
 Return only strict JSON. Do not include markdown.
@@ -74,7 +74,7 @@ Current input:
     },
     custom: {
         name: 'Custom stage',
-        model: 'granite4.1:3b',
+        model: 'qwen3.5:4b',
         inputMode: 'previous',
         prompt: `Return only the transformed text.
 
@@ -505,7 +505,7 @@ const WorkflowBuilderWindow = GObject.registerClass(class WorkflowBuilderWindow 
         const normalized = {
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
             name: stage.name || 'Custom stage',
-            model: stage.model || 'granite4.1:3b',
+            model: stage.model || 'qwen3.5:4b',
             inputMode: stage.inputMode || 'previous',
             prompt: stage.prompt || DEFAULT_PROMPTS.custom.prompt,
             enabled: stage.enabled !== false,
@@ -772,7 +772,7 @@ const WorkflowBuilderWindow = GObject.registerClass(class WorkflowBuilderWindow 
 
     async _runOllama(model, prompt) {
         const process = Gio.Subprocess.new(
-            ['ollama', 'run', '--nowordwrap', '--hidethinking', model],
+            ['ollama', 'run', '--nowordwrap', '--hidethinking', '--think=false', model],
             Gio.SubprocessFlags.STDIN_PIPE |
                 Gio.SubprocessFlags.STDOUT_PIPE |
                 Gio.SubprocessFlags.STDERR_PIPE

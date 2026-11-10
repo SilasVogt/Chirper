@@ -228,7 +228,7 @@ whispercpp_model_path = "$model_path"
 whisper_language = "auto"
 
 ollama_command = "ollama"
-ollama_model = "llama3.2"
+ollama_model = "gemma4:e4b"
 
 [vocabulary]
 CONFIG

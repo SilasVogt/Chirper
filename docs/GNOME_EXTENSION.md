@@ -145,7 +145,10 @@ The settings window includes an `AI Formatting` section. It can turn Ollama
 formatting on or off, select an installed Ollama model, control whether the model
 preloads when recording starts, and choose prompt-log retention. When AI
 formatting is enabled, the daemon sends the raw transcript to the selected model
-and copies/pastes the model output. Prompt logs are stored beside the config at
+and copies/pastes the `text` field of the model's JSON reply. Anything else the
+model says goes into its `notes` field, which is logged but never pasted. If AI
+formatting fails, the raw transcript is copied/pasted instead and a notification
+says why. Prompt logs are stored beside the config at
 `~/.config/chirper/prompt-logs`.
 
 The settings window also exposes transcription speed profiles.

@@ -71,9 +71,18 @@ Backends should be swappable behind narrow interfaces:
   edit commands, configured vocabulary, learned spelling corrections, common
   domain/email phrases, and conservative context-specific symbol cleanup.
   The daemon's Ollama AI formatting path currently sends the raw transcript to
-  the selected model and treats the model output as the final pasted text.
+  the selected model. AI formatters reply with one JSON object,
+  `{"notes": "...", "text": "..."}`, enforced through Ollama's `--format` and
+  Codex's `--output-schema`. Only `text` is pasted. `notes` gives the model a
+  place for comments, doubts, or answers to dictated questions, which keeps
+  them out of the pasted text; the daemon's Ollama path writes it to the prompt
+  log (the Codex path keeps no prompt logs). The prompt treats the transcript as
+  text to clean up, never as a request to the model, and empty transcripts skip
+  the model entirely. If formatting fails, the daemon pastes the raw transcript
+  instead and reports the failure as `formatting_error` in its response.
   Compare/test tools can still run raw-only, rules-preprocessed, and custom
-  prompt variants for experimentation.
+  prompt variants for experimentation. Custom prompts are sent as written and
+  are not forced into the JSON format.
 - `InsertionBackend`: insert final text into the focused application.
 - `HotkeyBackend`: optional frontend-side trigger source.
 

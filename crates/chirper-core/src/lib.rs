@@ -1,3 +1,4 @@
+pub mod ai_formatting;
 pub mod config;
 pub mod error;
 pub mod state;
@@ -5,7 +6,7 @@ pub mod traits;
 
 pub use config::{
     AiHardwareTier, AsrBackend, AudioBackend, ChirperConfig, CodexProfileConfig, FormatterBackend,
-    GpuBackend, GuiProfile, InsertionBackend, TranscriptionProfile, VocabularyEntry,
+    GpuBackend, GuiProfile, InsertionBackend, LogRetention, TranscriptionProfile, VocabularyEntry,
     WHISPER_MODEL_NAMES,
 };
 pub use error::{ChirperError, ChirperResult};

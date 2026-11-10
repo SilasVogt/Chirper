@@ -23,7 +23,9 @@ use chirper_core::{
     WorkflowState,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions};
-use chirper_formatter_ollama::{list_ollama_models, OllamaFormatter, OllamaOptions};
+use chirper_formatter_ollama::{
+    list_ollama_models, OllamaFormatRun, OllamaFormatter, OllamaOptions,
+};
 use chirper_formatter_rules::{format_spoken_rules_with_vocabulary, learn_spelling_vocabulary};
 use chirper_insertion_clipboard::ClipboardInserter;
 
@@ -274,18 +276,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
     learn_vocabulary_from_transcript(&mut config, &transcript);
 
     state.workflow = WorkflowState::Formatting;
-    let formatted = match format_transcript(&config, &transcript) {
-        Ok(formatted) => formatted,
-        Err(error) => {
-            state.workflow = WorkflowState::Idle;
-            let mut response = ApiResponse::error(state_name(state.workflow), error);
-            response.recording_path = recording_path;
-            response.transcript = Some(transcript.text);
-            apply_active_audio(&mut response, active_audio.as_ref());
-            state.active_audio = None;
-            return response;
-        }
-    };
+    let (formatted, formatting_error) = format_or_raw(&config, &transcript);
 
     if formatted.trim().is_empty() {
         state.workflow = WorkflowState::Idle;
@@ -293,6 +284,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
         response.recording_path = recording_path;
         response.transcript = Some(transcript.text);
         response.formatted = Some(formatted);
+        response.formatting_error = formatting_error;
         apply_active_audio(&mut response, active_audio.as_ref());
         state.active_audio = None;
         return response;
@@ -305,6 +297,7 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
         response.recording_path = recording_path;
         response.transcript = Some(transcript.text);
         response.formatted = Some(formatted);
+        response.formatting_error = formatting_error;
         apply_active_audio(&mut response, active_audio.as_ref());
         state.active_audio = None;
         return response;
@@ -312,11 +305,16 @@ fn stop_recording(state: &mut DaemonState) -> ApiResponse {
 
     state.workflow = WorkflowState::Idle;
     state.active_audio = None;
-    let mut response =
-        ApiResponse::ok(state_name(state.workflow), "transcript copied to clipboard");
+    let message = if formatting_error.is_some() {
+        "formatting failed; raw transcript copied to clipboard"
+    } else {
+        "transcript copied to clipboard"
+    };
+    let mut response = ApiResponse::ok(state_name(state.workflow), message);
     response.recording_path = recording_path;
     response.transcript = Some(transcript.text);
     response.formatted = Some(formatted);
+    response.formatting_error = formatting_error;
     response.copied = true;
     apply_active_audio(&mut response, active_audio.as_ref());
     response
@@ -388,7 +386,30 @@ fn transcribe_audio(
     asr.transcribe(audio).map_err(|error| error.to_string())
 }
 
+/// Formats the transcript. A failed formatter must not lose the dictation, so
+/// on failure this returns the words as Whisper heard them, plus the error to
+/// report next to the result.
+fn format_or_raw(config: &ChirperConfig, transcript: &Transcript) -> (String, Option<String>) {
+    match format_transcript(config, transcript) {
+        Ok(formatted) => (formatted, None),
+        Err(error) => {
+            eprintln!("formatting failed, using the raw transcript: {error}");
+            (transcript.text.clone(), Some(error))
+        }
+    }
+}
+
 fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<String, String> {
+    // Nothing was said, so there is nothing to format. AI models asked to clean
+    // up an empty transcript tend to reply with a complaint that then gets pasted.
+    if transcript.text.trim().is_empty() {
+        if config.formatter_backend == FormatterBackend::Ollama {
+            // Recording start preloaded the model with a long keepalive.
+            stop_ollama_model_silent(&config.ollama_command, &config.ollama_model);
+        }
+        return Ok(String::new());
+    }
+
     match config.formatter_backend {
         FormatterBackend::None => Ok(transcript.text.clone()),
         FormatterBackend::Rules => format_with_rules(config, transcript),
@@ -399,32 +420,26 @@ fn format_transcript(config: &ChirperConfig, transcript: &Transcript) -> Result<
                 run_with_resource_sampling(|| formatter.format_ai_prompt(transcript));
             stop_ollama_model_silent(&config.ollama_command, &config.ollama_model);
 
-            match result {
+            let formatted = match result {
                 Ok(run) => {
+                    // Log rejected replies too: they are the ones worth reading.
                     let elapsed_ms = started.elapsed().as_millis();
-                    if let Err(error) = write_prompt_log(
-                        config,
-                        transcript,
-                        &run.prompt,
-                        &run.output,
-                        &metrics,
-                        elapsed_ms,
-                    ) {
+                    if let Err(error) =
+                        write_prompt_log(config, transcript, &run, &metrics, elapsed_ms)
+                    {
                         eprintln!("{error}");
                     }
-                    if let Err(error) = prune_prompt_logs(config) {
-                        eprintln!("{error}");
-                    }
-
-                    Ok(run.output)
+                    run.reply
+                        .map(|reply| reply.text)
+                        .map_err(|error| error.to_string())
                 }
-                Err(error) => {
-                    if let Err(prune_error) = prune_prompt_logs(config) {
-                        eprintln!("{prune_error}");
-                    }
-                    Err(error.to_string())
-                }
+                Err(error) => Err(error.to_string()),
+            };
+            if let Err(error) = prune_prompt_logs(config) {
+                eprintln!("{error}");
             }
+
+            formatted
         }
         FormatterBackend::Codex => {
             let preformatted = format_with_rules(config, transcript)?;
@@ -901,12 +916,11 @@ fn read_string_file(path: impl AsRef<Path>) -> Option<String> {
 fn write_prompt_log(
     config: &ChirperConfig,
     transcript: &Transcript,
-    prompt: &str,
-    output: &str,
+    run: &OllamaFormatRun,
     metrics: &ResourceMetrics,
     elapsed_ms: u128,
 ) -> Result<(), String> {
-    if config.format_log_retention_days == 0 {
+    if !config.format_log_retention.is_enabled() {
         return Ok(());
     }
 
@@ -925,10 +939,18 @@ fn write_prompt_log(
     })?;
     fs::write(directory.join("raw-transcript.txt"), &transcript.text)
         .map_err(|source| format!("failed to write prompt log raw transcript: {source}"))?;
-    fs::write(directory.join("prompt.txt"), prompt)
+    let (output, notes, error) = match &run.reply {
+        Ok(reply) => (reply.text.as_str(), reply.notes.as_str(), None),
+        Err(error) => ("", "", Some(error.to_string())),
+    };
+    fs::write(directory.join("prompt.txt"), &run.prompt)
         .map_err(|source| format!("failed to write prompt log prompt: {source}"))?;
     fs::write(directory.join("output.txt"), output)
         .map_err(|source| format!("failed to write prompt log output: {source}"))?;
+    fs::write(directory.join("notes.txt"), notes)
+        .map_err(|source| format!("failed to write prompt log notes: {source}"))?;
+    fs::write(directory.join("raw-output.txt"), &run.raw_output)
+        .map_err(|source| format!("failed to write prompt log raw output: {source}"))?;
 
     let hardware = collect_hardware_snapshot(&config.ollama_command);
     let metadata = serde_json::json!({
@@ -936,10 +958,13 @@ fn write_prompt_log(
         "model": config.ollama_model,
         "formatter_backend": config.formatter_backend.as_config_value(),
         "elapsed_ms": elapsed_ms,
-        "log_retention_days": config.format_log_retention_days,
+        "log_retention_days": config.format_log_retention.to_json(),
         "prompt_file": "prompt.txt",
         "raw_transcript_file": "raw-transcript.txt",
         "output_file": "output.txt",
+        "notes_file": "notes.txt",
+        "raw_output_file": "raw-output.txt",
+        "error": error,
         "metrics": metrics_json(metrics),
         "hardware": hardware_json(&hardware),
     });
@@ -952,16 +977,16 @@ fn write_prompt_log(
 }
 
 fn prune_prompt_logs(config: &ChirperConfig) -> Result<(), String> {
-    if config.format_log_retention_days == 0 {
+    let Some(max_age_days) = config.format_log_retention.max_age_days() else {
         return Ok(());
-    }
+    };
 
     let directory = ChirperConfig::default_prompt_log_dir();
     if !directory.exists() {
         return Ok(());
     }
 
-    let retention = Duration::from_secs(config.format_log_retention_days.saturating_mul(86_400));
+    let retention = Duration::from_secs(max_age_days.saturating_mul(86_400));
     let now = SystemTime::now();
     let entries = fs::read_dir(&directory).map_err(|source| {
         format!(
@@ -1062,5 +1087,57 @@ fn state_name(state: WorkflowState) -> &'static str {
         WorkflowState::Formatting => "formatting",
         WorkflowState::Inserting => "inserting",
         WorkflowState::Error => "error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transcript(text: &str) -> Transcript {
+        Transcript {
+            text: text.to_string(),
+            language: None,
+        }
+    }
+
+    #[test]
+    fn failed_formatting_falls_back_to_the_raw_transcript() {
+        // llama.cpp formatting always fails in this version, without calling a model.
+        let config = ChirperConfig {
+            formatter_backend: FormatterBackend::LlamaCpp,
+            ..ChirperConfig::default()
+        };
+
+        let (formatted, error) = format_or_raw(&config, &transcript("hello comma world"));
+
+        assert_eq!(formatted, "hello comma world");
+        assert!(error.unwrap().contains("llama.cpp is not available"));
+    }
+
+    #[test]
+    fn working_formatting_reports_no_error() {
+        let config = ChirperConfig {
+            formatter_backend: FormatterBackend::None,
+            ..ChirperConfig::default()
+        };
+
+        let (formatted, error) = format_or_raw(&config, &transcript("hello world"));
+
+        assert_eq!(formatted, "hello world");
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn empty_transcript_is_not_a_formatting_failure() {
+        let config = ChirperConfig {
+            formatter_backend: FormatterBackend::LlamaCpp,
+            ..ChirperConfig::default()
+        };
+
+        assert_eq!(
+            format_or_raw(&config, &transcript("  ")),
+            (String::new(), None)
+        );
     }
 }
