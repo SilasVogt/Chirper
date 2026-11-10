@@ -156,8 +156,10 @@ fn is_silent_wav(path: &Path) -> bool {
 /// `SILENCE_PEAK`. Anything else counts as not silent, so Whisper decides.
 fn is_silent_wav_bytes(bytes: &[u8]) -> bool {
     pcm16_data(bytes).is_some_and(|data| {
-        data.chunks_exact(2)
-            .all(|pair| i32::from(i16::from_le_bytes([pair[0], pair[1]])).abs() <= SILENCE_PEAK)
+        let (samples, _) = data.as_chunks::<2>();
+        samples
+            .iter()
+            .all(|&sample| i32::from(i16::from_le_bytes(sample)).abs() <= SILENCE_PEAK)
     })
 }
 
