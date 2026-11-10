@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -58,7 +58,7 @@ pub struct ChirperConfig {
     pub ollama_command: String,
     pub ollama_model: String,
     pub ai_hardware_tier: AiHardwareTier,
-    pub format_log_retention_days: u64,
+    pub format_log_retention: LogRetention,
     pub ollama_preload_on_recording: bool,
     pub codex_command: String,
     pub codex_model: Option<String>,
@@ -90,7 +90,7 @@ impl Default for ChirperConfig {
             ollama_command: "ollama".to_string(),
             ollama_model: AiHardwareTier::High.ollama_model().to_string(),
             ai_hardware_tier: AiHardwareTier::High,
-            format_log_retention_days: 7,
+            format_log_retention: LogRetention::Days(7),
             ollama_preload_on_recording: true,
             codex_command: "codex".to_string(),
             codex_model: None,
@@ -203,7 +203,7 @@ impl ChirperConfig {
         }
 
         if let Some(value) = table.get("format_log_retention_days") {
-            config.format_log_retention_days = parse_u64("format_log_retention_days", value)?;
+            config.format_log_retention = parse_log_retention(value)?;
         }
 
         if let Some(value) = table.get("ollama_preload_on_recording") {
@@ -627,7 +627,7 @@ impl ChirperConfig {
         path: impl AsRef<Path>,
         enabled: Option<bool>,
         hardware_tier: Option<AiHardwareTier>,
-        log_retention_days: Option<u64>,
+        log_retention: Option<LogRetention>,
         preload_on_recording: Option<bool>,
     ) -> ChirperResult<()> {
         let path = path.as_ref();
@@ -662,11 +662,8 @@ impl ChirperConfig {
             );
         }
 
-        if let Some(days) = log_retention_days {
-            table.insert(
-                "format_log_retention_days".to_string(),
-                toml::Value::Integer(days as i64),
-            );
+        if let Some(retention) = log_retention {
+            table.insert("format_log_retention_days".to_string(), retention.to_toml());
         }
 
         if let Some(preload) = preload_on_recording {
@@ -891,14 +888,14 @@ impl ChirperConfig {
     pub fn save_default_ai_formatting(
         enabled: Option<bool>,
         hardware_tier: Option<AiHardwareTier>,
-        log_retention_days: Option<u64>,
+        log_retention: Option<LogRetention>,
         preload_on_recording: Option<bool>,
     ) -> ChirperResult<()> {
         Self::save_ai_formatting(
             Self::default_path(),
             enabled,
             hardware_tier,
-            log_retention_days,
+            log_retention,
             preload_on_recording,
         )
     }
@@ -1062,6 +1059,83 @@ impl FromStr for AiHardwareTier {
             "medium" | "mid" | "8to12gb" | "12gb" => Ok(Self::Medium),
             "high" | "highend" | "16gb" | "16plusgb" => Ok(Self::High),
             _ => Err(unknown_value("ai_hardware_tier", value)),
+        }
+    }
+}
+
+/// How long AI formatting prompt logs are kept. The config key
+/// `format_log_retention_days` holds a number of days, 0 to write no logs, or
+/// `"forever"` to never delete them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogRetention {
+    Off,
+    Days(u64),
+    Forever,
+}
+
+impl LogRetention {
+    pub fn from_days(days: u64) -> Self {
+        if days == 0 {
+            Self::Off
+        } else {
+            Self::Days(days)
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Age in days after which logs are deleted, or `None` when nothing is
+    /// deleted.
+    pub fn max_age_days(self) -> Option<u64> {
+        match self {
+            Self::Days(days) => Some(days),
+            Self::Off | Self::Forever => None,
+        }
+    }
+
+    pub fn to_toml(self) -> toml::Value {
+        match self {
+            Self::Off => toml::Value::Integer(0),
+            Self::Days(days) => toml::Value::Integer(i64::try_from(days).unwrap_or(i64::MAX)),
+            Self::Forever => toml::Value::String("forever".to_string()),
+        }
+    }
+
+    pub fn to_json(self) -> serde_json::Value {
+        match self {
+            Self::Off => serde_json::Value::from(0),
+            Self::Days(days) => serde_json::Value::from(days),
+            Self::Forever => serde_json::Value::from("forever"),
+        }
+    }
+}
+
+/// Formats the value as it is written in the config: `0`, the number of days,
+/// or `forever`.
+impl fmt::Display for LogRetention {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => formatter.write_str("0"),
+            Self::Days(days) => write!(formatter, "{days}"),
+            Self::Forever => formatter.write_str("forever"),
+        }
+    }
+}
+
+impl FromStr for LogRetention {
+    type Err = ChirperError;
+
+    fn from_str(value: &str) -> ChirperResult<Self> {
+        let trimmed = value.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "off" | "none" | "disable" | "disabled" => Ok(Self::Off),
+            "forever" => Ok(Self::Forever),
+            _ => trimmed
+                .parse::<u64>()
+                .map(Self::from_days)
+                .map_err(|_| unknown_value("format_log_retention_days", value)),
         }
     }
 }
@@ -1257,6 +1331,19 @@ fn parse_u64(key: &str, value: &toml::Value) -> ChirperResult<u64> {
     u64::try_from(value).map_err(|_| {
         ChirperError::Configuration(format!("config key `{key}` must be zero or greater"))
     })
+}
+
+fn parse_log_retention(value: &toml::Value) -> ChirperResult<LogRetention> {
+    match value {
+        toml::Value::String(text) => text.parse(),
+        toml::Value::Integer(_) => {
+            parse_u64("format_log_retention_days", value).map(LogRetention::from_days)
+        }
+        _ => Err(ChirperError::Configuration(
+            "config key `format_log_retention_days` must be a number of days or \"forever\""
+                .to_string(),
+        )),
+    }
 }
 
 fn parse_optional_string(key: &str, value: &toml::Value) -> ChirperResult<Option<String>> {
@@ -1516,7 +1603,7 @@ mod tests {
         assert_eq!(config.ollama_command, "/usr/bin/ollama");
         assert_eq!(config.ollama_model, "llama3.1:8b");
         assert_eq!(config.ai_hardware_tier, AiHardwareTier::Low);
-        assert_eq!(config.format_log_retention_days, 30);
+        assert_eq!(config.format_log_retention, LogRetention::Days(30));
         assert!(!config.ollama_preload_on_recording);
         assert_eq!(config.codex_command, "/usr/bin/codex");
         assert_eq!(config.codex_model, Some("gpt-5.5".to_string()));
@@ -1882,6 +1969,69 @@ mod tests {
         assert_eq!(config.gpu_backend, GpuBackend::Vulkan);
         assert_eq!(config.whisper_model, "small");
         assert_eq!(config.gui_profile, GuiProfile::None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn log_retention_accepts_days_off_and_forever() {
+        let parse = |text: &str| {
+            ChirperConfig::from_toml_str(text)
+                .unwrap()
+                .format_log_retention
+        };
+
+        assert_eq!(parse("format_log_retention_days = 0"), LogRetention::Off);
+        assert_eq!(
+            parse("format_log_retention_days = 30"),
+            LogRetention::Days(30)
+        );
+        assert_eq!(
+            parse(r#"format_log_retention_days = "forever""#),
+            LogRetention::Forever
+        );
+        assert_eq!(
+            parse(r#"format_log_retention_days = "off""#),
+            LogRetention::Off
+        );
+        assert!(ChirperConfig::from_toml_str(r#"format_log_retention_days = "always""#).is_err());
+        assert!(ChirperConfig::from_toml_str("format_log_retention_days = -1").is_err());
+        assert!("-1".parse::<LogRetention>().is_err());
+        assert_eq!(
+            " Forever ".parse::<LogRetention>().unwrap(),
+            LogRetention::Forever
+        );
+    }
+
+    #[test]
+    fn save_ai_formatting_writes_log_retention() {
+        let path = env::temp_dir().join(format!(
+            "chirper-config-test-{}-{}.toml",
+            std::process::id(),
+            "log-retention"
+        ));
+        fs::write(&path, "format_log_retention_days = 7\n").unwrap();
+
+        ChirperConfig::save_ai_formatting(&path, None, None, Some(LogRetention::Forever), None)
+            .unwrap();
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains(r#"format_log_retention_days = "forever""#));
+        assert_eq!(
+            ChirperConfig::load_from_path(&path)
+                .unwrap()
+                .format_log_retention,
+            LogRetention::Forever
+        );
+
+        ChirperConfig::save_ai_formatting(&path, None, None, Some(LogRetention::Off), None)
+            .unwrap();
+        assert_eq!(
+            ChirperConfig::load_from_path(&path)
+                .unwrap()
+                .format_log_retention,
+            LogRetention::Off
+        );
 
         let _ = fs::remove_file(path);
     }

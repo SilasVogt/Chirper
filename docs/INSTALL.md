@@ -186,12 +186,12 @@ model's JSON reply, and asks Ollama to unload after formatting. If formatting
 fails, Chirper copies/pastes the raw transcript instead of losing the dictation.
 Prompt logs are written under `~/.config/chirper/prompt-logs` by default. Each
 log has `prompt.txt`, `output.txt` (the pasted text), `notes.txt` (anything else
-the model said), and `raw-output.txt`. Logs can be retained for off, 1 day,
-1 week, or 30 days:
+the model said), and `raw-output.txt`. Logs are deleted after a number of days
+(7 by default), or kept forever, or turned off:
 
 ```sh
 chirper ai-format-current
-chirper ai-format-logs 7
+chirper ai-format-logs 7        # or 0 / off, 1, 30, forever
 chirper ai-format-preload on
 ```
 

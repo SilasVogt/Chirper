@@ -19,8 +19,8 @@ use chirper_asr_whispercpp::{WhisperCppAsr, WhisperCppOptions};
 use chirper_audio_pipewire::{DetachedRecording, PipeWireRecorder, PipeWireRecorderOptions};
 use chirper_core::{
     ai_formatting::FormatterReply, AsrEngine, AudioSource, ChirperConfig, ChirperResult,
-    CodexProfileConfig, DictationMode, FormatterBackend, GpuBackend, GuiProfile, ServiceCommand,
-    TextInserter, TranscriptionProfile, WorkflowState, WHISPER_MODEL_NAMES,
+    CodexProfileConfig, DictationMode, FormatterBackend, GpuBackend, GuiProfile, LogRetention,
+    ServiceCommand, TextInserter, TranscriptionProfile, WorkflowState, WHISPER_MODEL_NAMES,
 };
 use chirper_formatter_codex::{CodexFormatter, CodexOptions, CodexPromptInput};
 use chirper_formatter_ollama::{
@@ -2442,7 +2442,7 @@ fn formatter_current(args: Vec<String>) {
             "backend": config.formatter_backend.as_config_value(),
             "ollama_model": config.ollama_model,
             "ollama_command": config.ollama_command,
-            "format_log_retention_days": config.format_log_retention_days,
+            "format_log_retention_days": config.format_log_retention.to_json(),
             "ollama_preload_on_recording": config.ollama_preload_on_recording,
             "codex_command": config.codex_command,
             "codex_model": config.codex_model,
@@ -2459,10 +2459,7 @@ fn formatter_current(args: Vec<String>) {
     println!("backend: {}", config.formatter_backend.as_config_value());
     println!("ollama_command: {}", config.ollama_command);
     println!("ollama_model: {}", config.ollama_model);
-    println!(
-        "format_log_retention_days: {}",
-        config.format_log_retention_days
-    );
+    println!("format_log_retention_days: {}", config.format_log_retention);
     println!(
         "ollama_preload_on_recording: {}",
         config.ollama_preload_on_recording
@@ -2562,7 +2559,7 @@ fn ai_format_current(args: Vec<String>) {
             "model": config.ollama_model,
             "ollama_command": config.ollama_command,
             "preload_on_recording": config.ollama_preload_on_recording,
-            "log_retention_days": config.format_log_retention_days,
+            "log_retention_days": config.format_log_retention.to_json(),
             "prompt_log_dir": ChirperConfig::default_prompt_log_dir().display().to_string(),
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
@@ -2583,7 +2580,7 @@ fn ai_format_current(args: Vec<String>) {
         "preload_on_recording: {}",
         config.ollama_preload_on_recording
     );
-    println!("log_retention_days: {}", config.format_log_retention_days);
+    println!("log_retention_days: {}", config.format_log_retention);
     println!(
         "prompt_log_dir: {}",
         ChirperConfig::default_prompt_log_dir().display()
@@ -2637,28 +2634,24 @@ fn ai_format_use(args: Vec<String>) {
 }
 
 fn ai_format_logs(args: Vec<String>) {
+    const USAGE: &str = "usage: chirper ai-format-logs <off|0|1|7|30|days|forever>";
     let Some(value) = args.first() else {
-        eprintln!("usage: chirper ai-format-logs <off|0|1|7|30|days>");
+        eprintln!("{USAGE}");
         std::process::exit(1);
     };
 
-    let days = match value.as_str() {
-        "off" | "none" | "disable" | "disabled" => 0,
-        _ => match value.parse::<u64>() {
-            Ok(days) => days,
-            Err(_) => {
-                eprintln!("usage: chirper ai-format-logs <off|0|1|7|30|days>");
-                std::process::exit(1);
-            }
-        },
+    let Ok(retention) = value.parse::<LogRetention>() else {
+        eprintln!("{USAGE}");
+        std::process::exit(1);
     };
 
-    if let Err(error) = ChirperConfig::save_default_ai_formatting(None, None, Some(days), None) {
+    if let Err(error) = ChirperConfig::save_default_ai_formatting(None, None, Some(retention), None)
+    {
         eprintln!("{error}");
         std::process::exit(1);
     }
 
-    println!("AI prompt log retention days: {days}");
+    println!("AI prompt log retention days: {retention}");
 }
 
 fn ai_format_preload(args: Vec<String>) {

@@ -93,7 +93,7 @@ returns to local rules.
 When enabled, the daemon sends the raw transcript to the selected Ollama model,
 uses the model output as the copied/pasted text, writes prompt/input/output logs
 under `~/.config/chirper/prompt-logs`, and prunes those logs according to
-`format_log_retention_days`.
+`format_log_retention_days` (a number of days, `0` for no logs, or `"forever"`).
 
 To inspect and select Codex CLI formatting:
 

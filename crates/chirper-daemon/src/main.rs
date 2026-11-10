@@ -920,7 +920,7 @@ fn write_prompt_log(
     metrics: &ResourceMetrics,
     elapsed_ms: u128,
 ) -> Result<(), String> {
-    if config.format_log_retention_days == 0 {
+    if !config.format_log_retention.is_enabled() {
         return Ok(());
     }
 
@@ -958,7 +958,7 @@ fn write_prompt_log(
         "model": config.ollama_model,
         "formatter_backend": config.formatter_backend.as_config_value(),
         "elapsed_ms": elapsed_ms,
-        "log_retention_days": config.format_log_retention_days,
+        "log_retention_days": config.format_log_retention.to_json(),
         "prompt_file": "prompt.txt",
         "raw_transcript_file": "raw-transcript.txt",
         "output_file": "output.txt",
@@ -977,16 +977,16 @@ fn write_prompt_log(
 }
 
 fn prune_prompt_logs(config: &ChirperConfig) -> Result<(), String> {
-    if config.format_log_retention_days == 0 {
+    let Some(max_age_days) = config.format_log_retention.max_age_days() else {
         return Ok(());
-    }
+    };
 
     let directory = ChirperConfig::default_prompt_log_dir();
     if !directory.exists() {
         return Ok(());
     }
 
-    let retention = Duration::from_secs(config.format_log_retention_days.saturating_mul(86_400));
+    let retention = Duration::from_secs(max_age_days.saturating_mul(86_400));
     let now = SystemTime::now();
     let entries = fs::read_dir(&directory).map_err(|source| {
         format!(
